@@ -281,4 +281,18 @@ defmodule PhoenixKitAgent.ModelsTest do
       assert [{{:new, 1}, _expires, :new}] = :ets.lookup(Cache, {:new, 1})
     end
   end
+
+  describe "reports_cost?/1" do
+    test "OpenRouter reports a cost; an Anthropic model only where phoenix_kit_ai prices it" do
+      assert Models.reports_cost?(%{provider: "openrouter", model: "a/b"})
+      refute Models.reports_cost?(%{provider: "mistral", model: "mistral-large"})
+      refute Models.reports_cost?(%{provider: "anthropic", model: "claude-unknown-9"})
+      refute Models.reports_cost?(%{provider: "anthropic"})
+      refute Models.reports_cost?(nil)
+
+      # The rate table is in phoenix_kit_ai's newer versions only.
+      assert Models.reports_cost?(%{provider: "anthropic", model: "claude-sonnet-5-5"}) ==
+               Code.ensure_loaded?(PhoenixKitAI.AnthropicPricing)
+    end
+  end
 end

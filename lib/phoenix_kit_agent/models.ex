@@ -171,18 +171,36 @@ defmodule PhoenixKitAgent.Models do
   end
 
   @doc """
-  Whether calls on the endpoint report their cost to the AI journal: today
-  only OpenRouter answers with one (`usage.cost`); `phoenix_kit_ai` has no
-  price table for the other providers. On an endpoint that does not, money is
-  not counted and only the turn limit applies.
+  Whether calls on the endpoint report their cost to the AI journal:
+  OpenRouter answers with one (`usage.cost`), and `phoenix_kit_ai` prices an
+  Anthropic call from its rate table (`PhoenixKitAI.AnthropicPricing`, where
+  the installed version has it) when the model is in it. On an endpoint that
+  does not, money is not counted and only the turn limit applies.
   """
   @spec reports_cost?(Endpoint.t() | %{provider: term()} | nil) :: boolean()
-  def reports_cost?(%{provider: provider}) when is_binary(provider),
-    do: Endpoint.base_provider(provider) == "openrouter"
+  def reports_cost?(%{provider: provider} = endpoint) when is_binary(provider) do
+    case Endpoint.base_provider(provider) do
+      "openrouter" -> true
+      "anthropic" -> anthropic_priced?(endpoint)
+      _other -> false
+    end
+  end
 
   def reports_cost?(_endpoint), do: false
 
   # ── internals ─────────────────────────────────────────────────────────
+
+  @anthropic_pricing PhoenixKitAI.AnthropicPricing
+
+  # Called through `apply/3`: an older `phoenix_kit_ai` has no rate table, and
+  # then an Anthropic call is logged without a cost.
+  defp anthropic_priced?(%{model: model}) when is_binary(model) do
+    Code.ensure_loaded?(@anthropic_pricing) and
+      function_exported?(@anthropic_pricing, :per_token, 1) and
+      apply(@anthropic_pricing, :per_token, [model]) != nil
+  end
+
+  defp anthropic_priced?(_endpoint), do: false
 
   defp add_current(endpoints, uuids) do
     Enum.reduce(uuids, endpoints, fn

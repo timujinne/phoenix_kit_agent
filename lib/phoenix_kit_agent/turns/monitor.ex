@@ -450,10 +450,14 @@ defmodule PhoenixKitAgent.Turns.Monitor do
     safely(fn -> write_end(turn, ending) end)
     safely(fn -> Locks.release(turn.user_uuid, turn.conversation_uuid, turn.turn_ref) end)
 
-    PubSub.broadcast(
-      Conversations.topic(turn.conversation_uuid),
-      {:agent_turn_finished, turn.conversation_uuid, turn.turn_ref}
-    )
+    # A PubSub that is not there raises; when this runs in the monitor itself
+    # (no task could be started) that would take every running turn down.
+    safely(fn ->
+      PubSub.broadcast(
+        Conversations.topic(turn.conversation_uuid),
+        {:agent_turn_finished, turn.conversation_uuid, turn.turn_ref}
+      )
+    end)
   end
 
   # A task that returned is done, even when its deadline fired a moment late;

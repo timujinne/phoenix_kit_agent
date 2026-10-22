@@ -16,7 +16,10 @@ defmodule PhoenixKitAgent.MixProject do
       description:
         "AI agent module for PhoenixKit — per-user chats with tool calling over the PhoenixKit API registry",
       package: package(),
-      dialyzer: [plt_add_apps: [:phoenix_kit, :phoenix_kit_ai]],
+      dialyzer: [
+        plt_add_apps: [:phoenix_kit, :phoenix_kit_ai],
+        ignore_warnings: ".dialyzer_ignore.exs"
+      ],
       name: "PhoenixKitAgent",
       source_url: @source_url,
       docs: docs(),
