@@ -2,8 +2,9 @@ defmodule PhoenixKitAgent.ModelsTest do
   @moduledoc """
   The choice of a model for a user (spec §7.2): only `phoenix_kit_ai` endpoints
   that can chat, each with whether its model is known to take tools. OpenRouter
-  publishes that per model; for other providers `phoenix_kit_ai` has no
-  capability listing, so the answer is "unknown".
+  publishes that per model, and so does Anthropic's listing as `phoenix_kit_ai`
+  maps it; for other providers `phoenix_kit_ai` has no capability listing, so
+  the answer is "unknown".
   """
 
   use PhoenixKitAgent.DataCase, async: false
@@ -217,6 +218,20 @@ defmodule PhoenixKitAgent.ModelsTest do
       assert %{} = Models.tools_support([one, two])
       assert_received {:models_requested, "/api/v1/models"}
       refute_received {:models_requested, _}
+    end
+
+    test "an Anthropic endpoint is answered from its provider's listing" do
+      claude =
+        endpoint_fixture(%{
+          provider: "anthropic",
+          base_url: "https://api.anthropic.com/v1",
+          model: "claude-opus-5-5"
+        })
+
+      serve_models([{"claude-opus-5-5", ["max_tokens", "tools"]}])
+
+      assert Models.tools_support([claude]) == %{claude.uuid => :supported}
+      assert_received {:models_requested, "/v1/models"}
     end
 
     test "other providers are unknown, and nothing is asked of them" do

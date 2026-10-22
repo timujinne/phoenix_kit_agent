@@ -9,7 +9,8 @@ defmodule PhoenixKitAgent.Models do
   not, so the screen marks those:
 
     * `:supported` / `:unsupported` — OpenRouter publishes the parameters of
-      each model; `OpenRouterClient.model_supports_parameter?(model, "tools")`
+      each model, and `phoenix_kit_ai` maps Anthropic's model listing onto the
+      same fields; `OpenRouterClient.model_supports_parameter?(model, "tools")`
       answers. One listing is fetched per connection (API key and base URL),
       however many endpoints use it;
     * `:unknown` — every other provider (`phoenix_kit_ai` has no capability
@@ -158,11 +159,11 @@ defmodule PhoenixKitAgent.Models do
   defp ttl(_known), do: @known_ttl_ms
 
   defp capability(endpoints, check) do
-    {openrouter, others} = Enum.split_with(endpoints, &openrouter?/1)
+    {listed, others} = Enum.split_with(endpoints, &lists_capabilities?/1)
 
     unknown = Map.new(others, &{&1.uuid, :unknown})
 
-    openrouter
+    listed
     |> Enum.group_by(&connection/1)
     |> Enum.reduce(unknown, fn {connection, group}, acc ->
       Map.merge(acc, group_support(connection, group, check))
@@ -197,10 +198,15 @@ defmodule PhoenixKitAgent.Models do
     end)
   end
 
-  defp openrouter?(%Endpoint{provider: provider}) when is_binary(provider),
-    do: Endpoint.base_provider(provider) == "openrouter"
+  # The providers whose model listing says what a model takes: OpenRouter's
+  # `supported_parameters` and input modalities, and Anthropic's own
+  # `/models`, which `phoenix_kit_ai` maps onto the same fields.
+  @listing_providers ~w(openrouter anthropic)
 
-  defp openrouter?(_endpoint), do: false
+  defp lists_capabilities?(%Endpoint{provider: provider}) when is_binary(provider),
+    do: Endpoint.base_provider(provider) in @listing_providers
+
+  defp lists_capabilities?(_endpoint), do: false
 
   defp connection(endpoint) do
     {OpenRouterClient.resolve_api_key(endpoint), blank_to_nil(endpoint.base_url)}
