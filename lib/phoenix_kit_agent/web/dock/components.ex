@@ -16,6 +16,8 @@ defmodule PhoenixKitAgent.Web.Dock.Components do
 
   import PhoenixKitWeb.Components.Core.Icon, only: [icon: 1]
 
+  alias PhoenixKit.Settings
+  alias PhoenixKit.Utils.TimeZone
   alias PhoenixKitAgent.Schemas.{Attachment, Message}
   alias PhoenixKitAgent.Web.Dock.Texts
   alias PhoenixKitAgent.Web.Markdown
@@ -80,6 +82,48 @@ defmodule PhoenixKitAgent.Web.Dock.Components do
     ~H"""
     <div id={@id} class="hidden"></div>
     """
+  end
+
+  @doc """
+  When a chat was last written to, for the list of chats: how long ago in the
+  user's language, and the moment itself (site time zone) as the tooltip.
+
+  Rendered by the server only. Core's `time_ago` would do the same job, but
+  its `TimeAgo` hook rewrites the text in English in the browser, and its
+  tooltip is an English date.
+  """
+  attr(:id, :string, required: true)
+  attr(:datetime, DateTime, default: nil)
+
+  def chat_time(%{datetime: nil} = assigns) do
+    ~H"""
+    <span id={@id} class="text-xs">—</span>
+    """
+  end
+
+  def chat_time(assigns) do
+    ~H"""
+    <time id={@id} class="text-xs" datetime={DateTime.to_iso8601(@datetime)} title={site_moment(@datetime)}>
+      {ago(DateTime.diff(DateTime.utc_now(), @datetime))}
+    </time>
+    """
+  end
+
+  defp ago(seconds) when seconds < 60, do: gettext("just now")
+
+  defp ago(seconds) when seconds < 3_600,
+    do: ngettext("%{count} minute ago", "%{count} minutes ago", div(seconds, 60))
+
+  defp ago(seconds) when seconds < 86_400,
+    do: ngettext("%{count} hour ago", "%{count} hours ago", div(seconds, 3_600))
+
+  defp ago(seconds), do: ngettext("%{count} day ago", "%{count} days ago", div(seconds, 86_400))
+
+  # Digits only, so it reads the same in every language.
+  defp site_moment(datetime) do
+    datetime
+    |> TimeZone.shift(Settings.get_setting("time_zone", "0"))
+    |> Calendar.strftime("%Y-%m-%d %H:%M")
   end
 
   @doc "A file of the chat that waits for a message."

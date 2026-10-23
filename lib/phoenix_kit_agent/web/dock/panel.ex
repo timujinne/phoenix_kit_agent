@@ -32,7 +32,6 @@ defmodule PhoenixKitAgent.Web.Dock.Panel do
   import PhoenixKitWeb.Components.Core.Icon, only: [icon: 1]
   import PhoenixKitWeb.Components.Core.Input, only: [input: 1]
   import PhoenixKitWeb.Components.Core.Textarea, only: [textarea: 1]
-  import PhoenixKitWeb.Components.Core.TimeDisplay, only: [time_ago: 1]
   import PhoenixKitAgent.Web.Dock.Components
 
   alias Phoenix.LiveView.JS
@@ -269,7 +268,7 @@ defmodule PhoenixKitAgent.Web.Dock.Panel do
                   class="flex-1 min-w-0 text-left"
                 >
                   <span class="block truncate">{chat_title(chat)}</span>
-                  <.time_ago id={"pk-agent-chat-time-#{chat.uuid}"} datetime={chat.last_message_at} />
+                  <.chat_time id={"pk-agent-chat-time-#{chat.uuid}"} datetime={chat.last_message_at} />
                 </button>
                 <button
                   type="button"

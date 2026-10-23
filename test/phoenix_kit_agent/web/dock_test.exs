@@ -482,7 +482,27 @@ defmodule PhoenixKitAgent.Web.DockTest do
       chat |> Ecto.Changeset.change(last_message_at: at(2 * 86_400 + 60)) |> Repo.update!()
 
       view = dock(ctx, locale: "et")
-      assert has_element?(view, "#pk-agent-chat-time-#{chat.uuid}", "päeva tagasi")
+      assert has_element?(view, "#pk-agent-chat-time-#{chat.uuid}", "2 päeva tagasi")
+    end
+
+    # Core's time_ago carries the TimeAgo hook, which rewrites the text in English in
+    # the browser, and prints its tooltip as an English date: the list's time is the
+    # module's own, rendered by the server only.
+    test "the time of a chat is the server's text, with the moment in the site's time zone",
+         ctx do
+      {:ok, _} = PhoenixKit.Settings.update_setting("time_zone", "Europe/Tallinn")
+      chat = conversation_fixture(ctx.user, %{title: "When"})
+
+      chat
+      |> Ecto.Changeset.change(last_message_at: ~U[2026-07-15 12:00:00.000000Z])
+      |> Repo.update!()
+
+      view = dock(ctx, locale: "ru")
+      selector = "#pk-agent-chat-time-#{chat.uuid}"
+
+      refute has_element?(view, "#{selector}[phx-hook]")
+      assert has_element?(view, "#{selector}[title='2026-07-15 15:00']")
+      assert has_element?(view, selector, "дней назад")
     end
 
     test "renames and archives the user's own chat", ctx do

@@ -26,7 +26,7 @@ msgstr "%{email} hat das Monatslimit für Ausgaben des KI-Assistenten erreicht (
 msgid "%{email} has used all %{limit} AI assistant turns for today."
 msgstr "%{email} hat heute alle %{limit} Gesprächsrunden mit dem KI-Assistenten verbraucht."
 
-#: lib/phoenix_kit_agent/web/dock/components.ex:121
+#: lib/phoenix_kit_agent/web/dock/components.ex:165
 #, elixir-autogen, elixir-format
 msgid "1 found"
 msgid_plural "%{count} found"
@@ -63,10 +63,10 @@ msgstr "Ein Benutzer"
 msgid "AI Agent"
 msgstr "KI-Agent"
 
-#: lib/phoenix_kit_agent/web/dock/panel.ex:83
-#: lib/phoenix_kit_agent/web/dock/panel.ex:101
+#: lib/phoenix_kit_agent/web/dock/panel.ex:82
+#: lib/phoenix_kit_agent/web/dock/panel.ex:100
+#: lib/phoenix_kit_agent/web/dock/panel.ex:213
 #: lib/phoenix_kit_agent/web/dock/panel.ex:214
-#: lib/phoenix_kit_agent/web/dock/panel.ex:215
 #, elixir-autogen, elixir-format
 msgid "AI assistant"
 msgstr "KI-Assistent"
@@ -101,13 +101,13 @@ msgstr "Erlaubt"
 msgid "Apply to every user without limits of their own. Money is counted from the AI request journal, in US dollars, for endpoints that report a cost."
 msgstr "Gilt für jeden Benutzer ohne eigene Limits. Geld wird anhand des KI-Anfragejournals in US-Dollar gezählt, für Endpunkte, die Kosten melden."
 
+#: lib/phoenix_kit_agent/web/dock/panel.ex:290
 #: lib/phoenix_kit_agent/web/dock/panel.ex:291
-#: lib/phoenix_kit_agent/web/dock/panel.ex:292
 #, elixir-autogen, elixir-format
 msgid "Archive"
 msgstr "Archivieren"
 
-#: lib/phoenix_kit_agent/web/dock/panel.ex:169
+#: lib/phoenix_kit_agent/web/dock/panel.ex:168
 #, elixir-autogen, elixir-format
 msgid "Ask about anything you can see in the system."
 msgstr "Fragen Sie nach allem, was Sie im System sehen."
@@ -117,8 +117,8 @@ msgstr "Fragen Sie nach allem, was Sie im System sehen."
 msgid "Assistant"
 msgstr "Assistent"
 
+#: lib/phoenix_kit_agent/web/dock/panel.ex:369
 #: lib/phoenix_kit_agent/web/dock/panel.ex:370
-#: lib/phoenix_kit_agent/web/dock/panel.ex:371
 #, elixir-autogen, elixir-format
 msgid "Attach a file"
 msgstr "Datei anhängen"
@@ -129,18 +129,18 @@ msgstr "Datei anhängen"
 msgid "Attachments per message"
 msgstr "Anhänge pro Nachricht"
 
-#: lib/phoenix_kit_agent/web/dock/panel.ex:516
+#: lib/phoenix_kit_agent/web/dock/panel.ex:515
 #, elixir-autogen, elixir-format
 msgid "Calling a tool: %{names}…"
 msgstr "Werkzeug wird aufgerufen: %{names}…"
 
-#: lib/phoenix_kit_agent/web/dock/panel.ex:518
+#: lib/phoenix_kit_agent/web/dock/panel.ex:517
 #, elixir-autogen, elixir-format
 msgid "Calling a tool…"
 msgstr "Werkzeug wird aufgerufen…"
 
-#: lib/phoenix_kit_agent/web/dock/panel.ex:256
-#: lib/phoenix_kit_agent/web/dock/panel.ex:343
+#: lib/phoenix_kit_agent/web/dock/panel.ex:255
+#: lib/phoenix_kit_agent/web/dock/panel.ex:342
 #: lib/phoenix_kit_agent/web/users_live.ex:565
 #, elixir-autogen, elixir-format
 msgid "Cancel"
@@ -156,9 +156,9 @@ msgstr "Es wird geprüft, was die Modelle unterstützen…"
 msgid "Checking which models take tools…"
 msgstr "Es wird geprüft, welche Modelle Werkzeuge unterstützen…"
 
+#: lib/phoenix_kit_agent/web/dock/panel.ex:117
 #: lib/phoenix_kit_agent/web/dock/panel.ex:118
-#: lib/phoenix_kit_agent/web/dock/panel.ex:119
-#: lib/phoenix_kit_agent/web/dock/panel.ex:156
+#: lib/phoenix_kit_agent/web/dock/panel.ex:155
 #, elixir-autogen, elixir-format
 msgid "Close"
 msgstr "Schließen"
@@ -188,7 +188,7 @@ msgstr "Standardmodell"
 msgid "Defaults of the AI assistant"
 msgstr "Standardwerte des KI-Assistenten"
 
-#: lib/phoenix_kit_agent/web/dock/panel.ex:164
+#: lib/phoenix_kit_agent/web/dock/panel.ex:163
 #, elixir-autogen, elixir-format
 msgid "Earlier messages"
 msgstr "Frühere Nachrichten"
@@ -208,7 +208,7 @@ msgstr "Steht am Anfang jeder Anfrage jedes Benutzers, vor dem Teil der Website,
 msgid "History sent to the model, characters"
 msgstr "An das Modell gesendeter Verlauf, Zeichen"
 
-#: lib/phoenix_kit_agent/web/dock/panel.ex:133
+#: lib/phoenix_kit_agent/web/dock/panel.ex:132
 #, elixir-autogen, elixir-format
 msgid "How the assistant should answer you. It follows the site's own rules first."
 msgstr "Wie der Assistent Ihnen antworten soll. Zuerst gelten die Regeln der Website."
@@ -234,7 +234,7 @@ msgstr "Limits"
 msgid "Manage the AI assistant"
 msgstr "KI-Assistenten verwalten"
 
-#: lib/phoenix_kit_agent/web/dock/panel.ex:363
+#: lib/phoenix_kit_agent/web/dock/panel.ex:362
 #, elixir-autogen, elixir-format
 msgid "Message"
 msgstr "Nachricht"
@@ -260,13 +260,13 @@ msgstr "Modulstandard (%{name})"
 msgid "Module default (none set)"
 msgstr "Modulstandard (keiner festgelegt)"
 
-#: lib/phoenix_kit_agent/web/dock/panel.ex:302
+#: lib/phoenix_kit_agent/web/dock/panel.ex:301
 #, elixir-autogen, elixir-format
 msgid "More"
 msgstr "Mehr"
 
-#: lib/phoenix_kit_agent/web/dock/panel.ex:231
-#: lib/phoenix_kit_agent/web/dock/panel.ex:511
+#: lib/phoenix_kit_agent/web/dock/panel.ex:230
+#: lib/phoenix_kit_agent/web/dock/panel.ex:510
 #, elixir-autogen, elixir-format
 msgid "New chat"
 msgstr "Neuer Chat"
@@ -276,12 +276,12 @@ msgstr "Neuer Chat"
 msgid "No"
 msgstr "Nein"
 
-#: lib/phoenix_kit_agent/web/dock/panel.ex:188
+#: lib/phoenix_kit_agent/web/dock/panel.ex:187
 #, elixir-autogen, elixir-format
 msgid "No answer has come. Open the chat again to see where it stands."
 msgstr "Es ist keine Antwort gekommen. Öffnen Sie den Chat erneut, um den Stand zu sehen."
 
-#: lib/phoenix_kit_agent/web/dock/panel.ex:235
+#: lib/phoenix_kit_agent/web/dock/panel.ex:234
 #, elixir-autogen, elixir-format
 msgid "No chats yet."
 msgstr "Noch keine Chats."
@@ -296,7 +296,7 @@ msgstr "Für den Assistenten ist noch kein Modell gewählt. Ein Administrator w�
 msgid "No model that sees images is set up to read it."
 msgstr "Zum Lesen ist kein Modell eingerichtet, das Bilder sieht."
 
-#: lib/phoenix_kit_agent/web/dock/components.ex:130
+#: lib/phoenix_kit_agent/web/dock/components.ex:174
 #, elixir-autogen, elixir-format
 msgid "No result."
 msgstr "Kein Ergebnis."
@@ -317,7 +317,7 @@ msgstr "Niemand hat den Assistenten in diesem Monat genutzt."
 msgid "None"
 msgstr "Keine"
 
-#: lib/phoenix_kit_agent/web/dock/components.ex:128
+#: lib/phoenix_kit_agent/web/dock/components.ex:172
 #, elixir-autogen, elixir-format
 msgid "Not allowed: the tool was not run."
 msgstr "Nicht erlaubt: Das Werkzeug wurde nicht ausgeführt."
@@ -381,8 +381,8 @@ msgstr "Nur ein Eigentümer kann den Assistenten eines Eigentümers ändern."
 msgid "Only an Owner can change this setting."
 msgstr "Nur ein Eigentümer kann diese Einstellung ändern."
 
+#: lib/phoenix_kit_agent/web/dock/panel.ex:107
 #: lib/phoenix_kit_agent/web/dock/panel.ex:108
-#: lib/phoenix_kit_agent/web/dock/panel.ex:109
 #, elixir-autogen, elixir-format
 msgid "Personal instructions"
 msgstr "Persönliche Anweisungen"
@@ -402,14 +402,14 @@ msgstr "Prompt für diesen Benutzer"
 msgid "Reading it took too long."
 msgstr "Das Lesen dauerte zu lange."
 
-#: lib/phoenix_kit_agent/web/dock/components.ex:111
-#: lib/phoenix_kit_agent/web/dock/components.ex:112
+#: lib/phoenix_kit_agent/web/dock/components.ex:155
+#: lib/phoenix_kit_agent/web/dock/components.ex:156
 #, elixir-autogen, elixir-format
 msgid "Remove the file"
 msgstr "Datei entfernen"
 
+#: lib/phoenix_kit_agent/web/dock/panel.ex:279
 #: lib/phoenix_kit_agent/web/dock/panel.ex:280
-#: lib/phoenix_kit_agent/web/dock/panel.ex:281
 #, elixir-autogen, elixir-format
 msgid "Rename"
 msgstr "Umbenennen"
@@ -419,8 +419,8 @@ msgstr "Umbenennen"
 msgid "Request content in the AI journal"
 msgstr "Anfrageinhalt im KI-Journal"
 
-#: lib/phoenix_kit_agent/web/dock/panel.ex:144
-#: lib/phoenix_kit_agent/web/dock/panel.ex:254
+#: lib/phoenix_kit_agent/web/dock/panel.ex:143
+#: lib/phoenix_kit_agent/web/dock/panel.ex:253
 #: lib/phoenix_kit_agent/web/settings_live.ex:447
 #: lib/phoenix_kit_agent/web/settings_live.ex:520
 #: lib/phoenix_kit_agent/web/settings_live.ex:544
@@ -431,7 +431,7 @@ msgstr "Anfrageinhalt im KI-Journal"
 msgid "Save"
 msgstr "Speichern"
 
-#: lib/phoenix_kit_agent/web/dock/panel.ex:388
+#: lib/phoenix_kit_agent/web/dock/panel.ex:387
 #, elixir-autogen, elixir-format
 msgid "Send"
 msgstr "Senden"
@@ -479,12 +479,12 @@ msgstr "Ausgaben pro Tag"
 msgid "Spending per month"
 msgstr "Ausgaben pro Monat"
 
-#: lib/phoenix_kit_agent/web/dock/panel.ex:385
+#: lib/phoenix_kit_agent/web/dock/panel.ex:384
 #, elixir-autogen, elixir-format
 msgid "Stop"
 msgstr "Stopp"
 
-#: lib/phoenix_kit_agent/web/dock/panel.ex:513
+#: lib/phoenix_kit_agent/web/dock/panel.ex:512
 #, elixir-autogen, elixir-format
 msgid "Stopping…"
 msgstr "Wird gestoppt…"
@@ -647,7 +647,7 @@ msgstr "Das Modell verarbeitet derzeit keine Bilder, daher wurden sie nicht gese
 msgid "The model gave no answer. Try again."
 msgstr "Das Modell hat nicht geantwortet. Versuchen Sie es erneut."
 
-#: lib/phoenix_kit_agent/web/dock/components.ex:64
+#: lib/phoenix_kit_agent/web/dock/components.ex:66
 #, elixir-autogen, elixir-format
 msgid "The result was cut to fit."
 msgstr "Das Ergebnis wurde gekürzt, damit es passt."
@@ -667,17 +667,17 @@ msgstr "Die Einstellung konnte nicht gespeichert werden. Es wurde nichts geände
 msgid "The text is not in UTF-8. Save the file as UTF-8 and add it again."
 msgstr "Der Text ist nicht in UTF-8. Speichern Sie die Datei als UTF-8 und fügen Sie sie erneut hinzu."
 
-#: lib/phoenix_kit_agent/web/dock/components.ex:127
+#: lib/phoenix_kit_agent/web/dock/components.ex:171
 #, elixir-autogen, elixir-format
 msgid "The tool answered."
 msgstr "Das Werkzeug hat geantwortet."
 
-#: lib/phoenix_kit_agent/web/dock/components.ex:129
+#: lib/phoenix_kit_agent/web/dock/components.ex:173
 #, elixir-autogen, elixir-format
 msgid "The tool failed."
 msgstr "Das Werkzeug ist fehlgeschlagen."
 
-#: lib/phoenix_kit_agent/web/dock/panel.ex:519
+#: lib/phoenix_kit_agent/web/dock/panel.ex:518
 #, elixir-autogen, elixir-format
 msgid "Thinking…"
 msgstr "Denkt nach…"
@@ -727,7 +727,7 @@ msgstr "Diesen Monat"
 msgid "This user does not use the assistant."
 msgstr "Dieser Benutzer nutzt den Assistenten nicht."
 
-#: lib/phoenix_kit_agent/web/dock/panel.ex:251
+#: lib/phoenix_kit_agent/web/dock/panel.ex:250
 #, elixir-autogen, elixir-format
 msgid "Title"
 msgstr "Titel"
@@ -842,7 +842,7 @@ msgstr "Wer den KI-Assistenten nutzt und mit welchen Limits"
 msgid "Write a message first."
 msgstr "Schreiben Sie zuerst eine Nachricht."
 
-#: lib/phoenix_kit_agent/web/dock/panel.ex:362
+#: lib/phoenix_kit_agent/web/dock/panel.ex:361
 #, elixir-autogen, elixir-format
 msgid "Write a message…"
 msgstr "Nachricht schreiben…"
@@ -969,7 +969,7 @@ msgstr "Ihre Sitzung ist beendet, daher hat der Assistent gestoppt."
 msgid "Your session has ended. Sign in again to use the assistant."
 msgstr "Ihre Sitzung ist beendet. Melden Sie sich erneut an, um den Assistenten zu nutzen."
 
-#: lib/phoenix_kit_agent/web/dock/components.ex:59
+#: lib/phoenix_kit_agent/web/dock/components.ex:61
 #, elixir-autogen, elixir-format
 msgid "a tool"
 msgstr "ein Werkzeug"
@@ -985,7 +985,7 @@ msgstr "Tag"
 msgid "does not take pictures"
 msgstr "verarbeitet keine Bilder"
 
-#: lib/phoenix_kit_agent/web/dock/components.ex:123
+#: lib/phoenix_kit_agent/web/dock/components.ex:167
 #, elixir-autogen, elixir-format
 msgid "done"
 msgstr "erledigt"
@@ -1106,3 +1106,29 @@ msgstr "MB"
 msgctxt "unit"
 msgid "s"
 msgstr "s"
+
+#: lib/phoenix_kit_agent/web/dock/components.ex:120
+#, elixir-autogen, elixir-format
+msgid "%{count} day ago"
+msgid_plural "%{count} days ago"
+msgstr[0] "vor %{count} Tag"
+msgstr[1] "vor %{count} Tagen"
+
+#: lib/phoenix_kit_agent/web/dock/components.ex:118
+#, elixir-autogen, elixir-format
+msgid "%{count} hour ago"
+msgid_plural "%{count} hours ago"
+msgstr[0] "vor %{count} Stunde"
+msgstr[1] "vor %{count} Stunden"
+
+#: lib/phoenix_kit_agent/web/dock/components.ex:115
+#, elixir-autogen, elixir-format
+msgid "%{count} minute ago"
+msgid_plural "%{count} minutes ago"
+msgstr[0] "vor %{count} Minute"
+msgstr[1] "vor %{count} Minuten"
+
+#: lib/phoenix_kit_agent/web/dock/components.ex:112
+#, elixir-autogen, elixir-format
+msgid "just now"
+msgstr "gerade eben"
