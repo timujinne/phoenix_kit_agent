@@ -234,6 +234,36 @@ defmodule PhoenixKitAgent.ModelsTest do
       assert_received {:models_requested, "/v1/models"}
     end
 
+    test "an Anthropic model read into capabilities takes tools and, where it says so, images" do
+      # Anthropic's native /models row: no supported_parameters, no
+      # architecture, its capabilities instead.
+      claude =
+        endpoint_fixture(%{
+          provider: "anthropic",
+          base_url: "https://api.anthropic.com/v1",
+          model: "claude-opus-5-5"
+        })
+
+      Req.Test.expect(@stub, 2, fn conn ->
+        Req.Test.json(conn, %{
+          "data" => [
+            %{
+              "id" => "claude-opus-5-5",
+              "type" => "model",
+              "display_name" => "Claude Opus 5.5",
+              "max_input_tokens" => 200_000,
+              "max_tokens" => 64_000,
+              "capabilities" => %{"image_input" => %{"supported" => true}}
+            }
+          ],
+          "has_more" => false
+        })
+      end)
+
+      assert Models.tools_support([claude]) == %{claude.uuid => :supported}
+      assert Models.image_input_support([claude]) == %{claude.uuid => :supported}
+    end
+
     test "other providers are unknown, and nothing is asked of them" do
       deepseek = endpoint_fixture(%{provider: "deepseek", model: "deepseek-chat"})
 

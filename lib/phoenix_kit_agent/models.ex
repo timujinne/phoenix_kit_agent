@@ -269,12 +269,39 @@ defmodule PhoenixKitAgent.Models do
   defp verdict(false), do: :unsupported
   defp verdict(:unknown), do: :unknown
 
-  defp takes_tools?(model), do: OpenRouterClient.model_supports_parameter?(model, "tools")
+  defp takes_tools?(model) do
+    case listed_capability(model, :tools) do
+      nil -> OpenRouterClient.model_supports_parameter?(model, "tools")
+      answer -> answer
+    end
+  end
+
+  # A `phoenix_kit_ai` that reads a listing into capabilities (Anthropic's
+  # native `/models` has no `supported_parameters` and no `architecture`)
+  # answers from them where they say yes or no; otherwise the OpenRouter
+  # fields below decide. An older `phoenix_kit_ai` has no capabilities.
+  defp listed_capability(model, key) do
+    case model |> Map.get(:capabilities) |> capability_value(key) do
+      :yes -> true
+      :no -> false
+      _unknown -> nil
+    end
+  end
+
+  defp capability_value(%{} = capabilities, key), do: Map.get(capabilities, key)
+  defp capability_value(_none, _key), do: nil
+
+  defp takes_images?(model) do
+    case listed_capability(model, :vision) do
+      nil -> takes_images_by_architecture?(model)
+      answer -> answer
+    end
+  end
 
   # OpenRouter lists `input_modalities`; the older `modality` ("text+image->text")
   # is the fallback. Only the input side counts. A model that declares neither
   # is not known not to see.
-  defp takes_images?(%{architecture: architecture}) when is_map(architecture) do
+  defp takes_images_by_architecture?(%{architecture: architecture}) when is_map(architecture) do
     case {architecture["input_modalities"], architecture["modality"]} do
       {inputs, _modality} when is_list(inputs) ->
         "image" in inputs
@@ -287,7 +314,7 @@ defmodule PhoenixKitAgent.Models do
     end
   end
 
-  defp takes_images?(_model), do: :unknown
+  defp takes_images_by_architecture?(_model), do: :unknown
 
   defp blank_to_nil(value) when is_binary(value),
     do: if(String.trim(value) == "", do: nil, else: value)
