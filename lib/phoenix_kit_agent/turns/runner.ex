@@ -836,6 +836,11 @@ defmodule PhoenixKitAgent.Turns.Runner do
   defp model_error_text({:task_limit_exceeded, _scope, _unit, _period}, _unsent?),
     do: guard_text(:task_limit_exceeded)
 
+  defp model_error_text(:insufficient_credits, _unsent?),
+    do:
+      "The AI account behind the assistant has run out of credit. " <>
+        "An administrator has to top it up or choose another model."
+
   defp model_error_text(_reason, true),
     do:
       "The model did not answer; it may not take the pictures. " <>

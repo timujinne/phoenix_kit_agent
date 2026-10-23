@@ -374,6 +374,20 @@ defmodule PhoenixKitAgent.TurnsTest do
       assert %Message{role: "notice", error: "rate_limited"} = List.last(messages(ctx.chat))
     end
 
+    test "a provider account out of credit is stored under its own code, not as a retry", ctx do
+      error_next(402)
+
+      turn_ref = start!(ctx, "Hi")
+      await_end(ctx.chat, turn_ref)
+
+      assert %Message{role: "notice", error: "insufficient_credits", content: content} =
+               List.last(messages(ctx.chat))
+
+      assert content =~ "run out of credit"
+      refute content =~ "Try again"
+      assert unlocked?(ctx)
+    end
+
     test "an answer that cannot be stored ends the turn with a notice", ctx do
       bad = put_in(text_answer("Hi."), ["usage", "prompt_tokens"], -1)
       answer_next(bad)

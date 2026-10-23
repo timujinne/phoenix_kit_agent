@@ -1642,6 +1642,24 @@ defmodule PhoenixKitAgent.Web.DockTest do
       assert has_element?(view, "#pk-agent-feed [data-role=notice]", "Words of its own")
     end
 
+    test "an account out of credit is told in the panel's language, never as a retry", ctx do
+      turn_message!(ctx.chat, %{
+        role: "notice",
+        content: "The model did not answer. Try again.",
+        error: "insufficient_credits"
+      })
+
+      view = dock(ctx)
+      open_chat(view, ctx.chat)
+      assert has_element?(view, "#pk-agent-feed [data-role=notice]", "run out of credit")
+      refute render(view) =~ "Try again"
+
+      view = dock(ctx, locale: "ru")
+      open_chat(view, ctx.chat)
+      assert has_element?(view, "#pk-agent-feed [data-role=notice]", "закончились средства")
+      refute render(view) =~ "Try again"
+    end
+
     test "a long chat opens at its end; the earlier messages come on request", ctx do
       for n <- 1..60, do: turn_message!(ctx.chat, %{role: "notice", content: "Note #{n}."})
 

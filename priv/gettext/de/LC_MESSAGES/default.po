@@ -505,7 +505,7 @@ msgstr "Beobachter benachrichtigen, wenn dieser Benutzer ein Limit erreicht"
 msgid "The AI budget is used up, so it was not read."
 msgstr "Das KI-Budget ist aufgebraucht, daher wurde sie nicht gelesen."
 
-#: lib/phoenix_kit_agent/web/dock/texts.ex:209
+#: lib/phoenix_kit_agent/web/dock/texts.ex:216
 #, elixir-autogen, elixir-format
 msgid "The AI budget is used up."
 msgstr "Das KI-Budget ist aufgebraucht."
@@ -601,7 +601,7 @@ msgstr "Die Datei konnte nicht gelesen werden oder ist leer."
 msgid "The file could not be read."
 msgstr "Die Datei konnte nicht gelesen werden."
 
-#: lib/phoenix_kit_agent/web/dock/texts.ex:311
+#: lib/phoenix_kit_agent/web/dock/texts.ex:318
 #, elixir-autogen, elixir-format
 msgid "The file could not be uploaded."
 msgstr "Die Datei konnte nicht hochgeladen werden."
@@ -612,7 +612,7 @@ msgid "The file is too large to read."
 msgstr "Die Datei ist zum Lesen zu groß."
 
 #: lib/phoenix_kit_agent/web/dock/texts.ex:96
-#: lib/phoenix_kit_agent/web/dock/texts.ex:308
+#: lib/phoenix_kit_agent/web/dock/texts.ex:315
 #, elixir-autogen, elixir-format
 msgid "The file is too large."
 msgstr "Die Datei ist zu groß."
@@ -637,7 +637,7 @@ msgstr "Die Nachricht ist zu lang. Kürzen Sie sie oder senden Sie sie als Datei
 msgid "The model could not read it."
 msgstr "Das Modell konnte sie nicht lesen."
 
-#: lib/phoenix_kit_agent/web/dock/texts.ex:237
+#: lib/phoenix_kit_agent/web/dock/texts.ex:244
 #, elixir-autogen, elixir-format
 msgid "The model does not take pictures now, so they were not sent. Remove them and attach them again to have them described, or choose a model that sees."
 msgstr "Das Modell verarbeitet derzeit keine Bilder, daher wurden sie nicht gesendet. Entfernen Sie sie und hängen Sie sie erneut an, damit sie beschrieben werden, oder wählen Sie ein Modell, das Bilder sieht."
@@ -687,7 +687,7 @@ msgstr "Denkt nach…"
 msgid "This answer is no longer running here. The chat will be free again in a few minutes."
 msgstr "Diese Antwort läuft hier nicht mehr. Der Chat ist in einigen Minuten wieder frei."
 
-#: lib/phoenix_kit_agent/web/dock/texts.ex:208
+#: lib/phoenix_kit_agent/web/dock/texts.ex:215
 #, elixir-autogen, elixir-format
 msgid "This chat is gone."
 msgstr "Dieser Chat ist verschwunden."
@@ -744,7 +744,7 @@ msgstr "Heute"
 msgid "Too many files are waiting. Send or remove some of them first."
 msgstr "Zu viele Dateien warten. Senden oder entfernen Sie zuerst einige davon."
 
-#: lib/phoenix_kit_agent/web/dock/texts.ex:309
+#: lib/phoenix_kit_agent/web/dock/texts.ex:316
 #, elixir-autogen, elixir-format
 msgid "Too many files at once."
 msgstr "Zu viele Dateien auf einmal."
@@ -1135,22 +1135,22 @@ msgstr "[Bestätigung] die Daten haben sich geändert, eine neue Bestätigung wa
 msgid "Ask again"
 msgstr "Erneut anfragen"
 
-#: lib/phoenix_kit_agent/web/dock/texts.ex:256
+#: lib/phoenix_kit_agent/web/dock/texts.ex:263
 #, elixir-autogen, elixir-format
 msgid "Cancelled:"
 msgstr "Abgebrochen:"
 
-#: lib/phoenix_kit_agent/web/dock/texts.ex:255
+#: lib/phoenix_kit_agent/web/dock/texts.ex:262
 #, elixir-autogen, elixir-format
 msgid "Done:"
 msgstr "Ausgeführt:"
 
-#: lib/phoenix_kit_agent/web/dock/texts.ex:259
+#: lib/phoenix_kit_agent/web/dock/texts.ex:266
 #, elixir-autogen, elixir-format
 msgid "Failed:"
 msgstr "Fehlgeschlagen:"
 
-#: lib/phoenix_kit_agent/web/dock/texts.ex:257
+#: lib/phoenix_kit_agent/web/dock/texts.ex:264
 #, elixir-autogen, elixir-format
 msgid "Ran out:"
 msgstr "Abgelaufen:"
@@ -1160,77 +1160,77 @@ msgstr "Abgelaufen:"
 msgid "Run"
 msgstr "Ausführen"
 
-#: lib/phoenix_kit_agent/web/dock/texts.ex:268
+#: lib/phoenix_kit_agent/web/dock/texts.ex:275
 #, elixir-autogen, elixir-format
 msgid "The assistant is answering. Try again when it has finished."
 msgstr "Der Assistent antwortet gerade. Versuchen Sie es erneut, wenn er fertig ist."
 
-#: lib/phoenix_kit_agent/web/dock/texts.ex:291
+#: lib/phoenix_kit_agent/web/dock/texts.ex:298
 #, elixir-autogen, elixir-format
 msgid "The assistant may not make changes in this part of the site now."
 msgstr "Der Assistent darf in diesem Bereich der Website derzeit nichts ändern."
 
-#: lib/phoenix_kit_agent/web/dock/texts.ex:245
+#: lib/phoenix_kit_agent/web/dock/texts.ex:252
 #, elixir-autogen, elixir-format
 msgid "The assistant proposes a change"
 msgstr "Der Assistent schlägt eine Änderung vor"
 
-#: lib/phoenix_kit_agent/web/dock/texts.ex:302
+#: lib/phoenix_kit_agent/web/dock/texts.ex:309
 #, elixir-autogen, elixir-format
 msgid "The change cannot be made now. Try again later, or cancel it."
 msgstr "Die Änderung ist derzeit nicht möglich. Versuchen Sie es später erneut oder brechen Sie sie ab."
 
-#: lib/phoenix_kit_agent/web/dock/texts.ex:299
+#: lib/phoenix_kit_agent/web/dock/texts.ex:306
 #, elixir-autogen, elixir-format
 msgid "The change does not fit what the tool takes any more."
 msgstr "Die Änderung passt nicht mehr zu dem, was das Werkzeug annimmt."
 
-#: lib/phoenix_kit_agent/web/dock/texts.ex:250
+#: lib/phoenix_kit_agent/web/dock/texts.ex:257
 #, elixir-autogen, elixir-format
 msgid "The change failed"
 msgstr "Die Änderung ist fehlgeschlagen"
 
-#: lib/phoenix_kit_agent/web/dock/texts.ex:247
+#: lib/phoenix_kit_agent/web/dock/texts.ex:254
 #, elixir-autogen, elixir-format
 msgid "The change was cancelled"
 msgstr "Die Änderung wurde abgebrochen"
 
-#: lib/phoenix_kit_agent/web/dock/texts.ex:246
+#: lib/phoenix_kit_agent/web/dock/texts.ex:253
 #, elixir-autogen, elixir-format
 msgid "The change was made"
 msgstr "Die Änderung wurde ausgeführt"
 
-#: lib/phoenix_kit_agent/web/dock/texts.ex:248
+#: lib/phoenix_kit_agent/web/dock/texts.ex:255
 #, elixir-autogen, elixir-format
 msgid "The confirmation ran out; nothing was changed"
 msgstr "Die Bestätigung ist abgelaufen; nichts wurde geändert"
 
-#: lib/phoenix_kit_agent/web/dock/texts.ex:249
+#: lib/phoenix_kit_agent/web/dock/texts.ex:256
 #, elixir-autogen, elixir-format
 msgid "The data changed — check it again below"
 msgstr "Die Daten haben sich geändert — prüfen Sie sie unten erneut"
 
-#: lib/phoenix_kit_agent/web/dock/texts.ex:258
+#: lib/phoenix_kit_agent/web/dock/texts.ex:265
 #, elixir-autogen, elixir-format
 msgid "The data changed:"
 msgstr "Die Daten haben sich geändert:"
 
-#: lib/phoenix_kit_agent/web/dock/texts.ex:282
+#: lib/phoenix_kit_agent/web/dock/texts.ex:289
 #, elixir-autogen, elixir-format
 msgid "This change can be asked for again only once its confirmation ran out."
 msgstr "Diese Änderung kann erst erneut angefragt werden, wenn ihre Bestätigung abgelaufen ist."
 
-#: lib/phoenix_kit_agent/web/dock/texts.ex:251
+#: lib/phoenix_kit_agent/web/dock/texts.ex:258
 #, elixir-autogen, elixir-format
 msgid "This change can no longer be confirmed here"
 msgstr "Diese Änderung kann hier nicht mehr bestätigt werden"
 
-#: lib/phoenix_kit_agent/web/dock/texts.ex:286
+#: lib/phoenix_kit_agent/web/dock/texts.ex:293
 #, elixir-autogen, elixir-format
 msgid "This change cannot be confirmed: the assistant's call is not in the chat any more."
 msgstr "Diese Änderung kann nicht bestätigt werden: Der Aufruf des Assistenten ist nicht mehr im Chat."
 
-#: lib/phoenix_kit_agent/web/dock/texts.ex:279
+#: lib/phoenix_kit_agent/web/dock/texts.ex:286
 #, elixir-autogen, elixir-format
 msgid "This change no longer waits for you."
 msgstr "Diese Änderung wartet nicht mehr auf Ihre Bestätigung."
@@ -1245,7 +1245,7 @@ msgstr "Wartet auf Sie bis %{time}."
 msgid "What the assistant sent"
 msgstr "Was der Assistent gesendet hat"
 
-#: lib/phoenix_kit_agent/web/dock/texts.ex:293
+#: lib/phoenix_kit_agent/web/dock/texts.ex:300
 #, elixir-autogen, elixir-format
 msgid "You may not make this change now."
 msgstr "Sie dürfen diese Änderung derzeit nicht vornehmen."
@@ -1265,12 +1265,12 @@ msgstr "Änderung abbrechen"
 msgid "[confirmation] waiting: %{action}"
 msgstr "[Bestätigung] wartet: %{action}"
 
-#: lib/phoenix_kit_agent/web/dock/texts.ex:271
+#: lib/phoenix_kit_agent/web/dock/texts.ex:278
 #, elixir-autogen, elixir-format
 msgid "A change is being confirmed right now. Try again in a moment."
 msgstr "Gerade wird eine Änderung bestätigt. Versuchen Sie es gleich noch einmal."
 
-#: lib/phoenix_kit_agent/web/dock/texts.ex:275
+#: lib/phoenix_kit_agent/web/dock/texts.ex:282
 #, elixir-autogen, elixir-format
 msgid "What became of this change could not be saved in the chat. Open the chat again to see it."
 msgstr "Was aus dieser Änderung wurde, konnte im Chat nicht gespeichert werden. Öffnen Sie den Chat erneut, um es zu sehen."
@@ -1352,12 +1352,12 @@ msgstr "kann nicht verwendet werden: sein Modell verarbeitet keine Bilder"
 msgid "cannot be used: its model does not take tools, which the assistant needs"
 msgstr "kann nicht verwendet werden: sein Modell unterstützt keine Werkzeuge, die der Assistent braucht"
 
-#: lib/phoenix_kit_agent/web/dock/texts.ex:225
+#: lib/phoenix_kit_agent/web/dock/texts.ex:232
 #, elixir-autogen, elixir-format
 msgid "It is not known whether the model chosen for the assistant can do what it needs. An administrator marks what the model can do on its AI endpoint, or chooses another one."
 msgstr "Es ist nicht bekannt, ob das für den Assistenten gewählte Modell kann, was er braucht. Ein Administrator markiert am KI-Endpunkt, was das Modell kann, oder wählt ein anderes."
 
-#: lib/phoenix_kit_agent/web/dock/texts.ex:231
+#: lib/phoenix_kit_agent/web/dock/texts.ex:238
 #, elixir-autogen, elixir-format
 msgid "No provider of the model takes the request as its AI endpoint is set up. An administrator checks the endpoint's settings."
 msgstr "Kein Anbieter des Modells nimmt die Anfrage so an, wie sein KI-Endpunkt eingerichtet ist. Ein Administrator prüft die Einstellungen des Endpunkts."
@@ -1367,7 +1367,7 @@ msgstr "Kein Anbieter des Modells nimmt die Anfrage so an, wie sein KI-Endpunkt 
 msgid "The AI assistant has reached its limit for now, so it was not read."
 msgstr "Der KI-Assistent hat sein Limit vorerst erreicht, deshalb wurde die Datei nicht gelesen."
 
-#: lib/phoenix_kit_agent/web/dock/texts.ex:215
+#: lib/phoenix_kit_agent/web/dock/texts.ex:222
 #, elixir-autogen, elixir-format
 msgid "The AI assistant has reached its limit for now. Try again later."
 msgstr "Der KI-Assistent hat sein Limit vorerst erreicht. Versuchen Sie es später erneut."
@@ -1377,12 +1377,12 @@ msgstr "Der KI-Assistent hat sein Limit vorerst erreicht. Versuchen Sie es spät
 msgid "The AI assistant is blocked for you, so it was not read."
 msgstr "Der KI-Assistent ist für Sie gesperrt, deshalb wurde die Datei nicht gelesen."
 
-#: lib/phoenix_kit_agent/web/dock/texts.ex:212
+#: lib/phoenix_kit_agent/web/dock/texts.ex:219
 #, elixir-autogen, elixir-format
 msgid "The AI assistant is blocked for you. An administrator can lift the block."
 msgstr "Der KI-Assistent ist für Sie gesperrt. Ein Administrator kann die Sperre aufheben."
 
-#: lib/phoenix_kit_agent/web/dock/texts.ex:219
+#: lib/phoenix_kit_agent/web/dock/texts.ex:226
 #, elixir-autogen, elixir-format
 msgid "The model chosen for the assistant cannot do what it needs. An administrator chooses another one."
 msgstr "Das für den Assistenten gewählte Modell kann nicht, was er braucht. Ein Administrator wählt ein anderes."
@@ -1476,3 +1476,8 @@ msgstr "Schreiben: %{available} von %{total}"
 #, elixir-autogen, elixir-format
 msgid "Your session's role does not grant its permission."
 msgstr "Die Rolle Ihrer Sitzung gewährt seine Berechtigung nicht."
+
+#: lib/phoenix_kit_agent/web/dock/texts.ex:211
+#, elixir-autogen, elixir-format
+msgid "The AI account behind the assistant has run out of credit. An administrator has to top it up or choose another model."
+msgstr "Das KI-Konto hinter dem Assistenten hat kein Guthaben mehr. Ein Administrator muss es aufladen oder ein anderes Modell wählen."

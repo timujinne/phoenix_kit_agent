@@ -146,6 +146,38 @@ defmodule PhoenixKitAgent.TranslationsTest do
     end
   end
 
+  test "an account out of credit is told in every language, without a provider or a retry" do
+    texts =
+      Map.new(@languages, fn locale ->
+        {locale,
+         Gettext.with_locale(PhoenixKitAgent.Gettext, locale, fn ->
+           Texts.notice("insufficient_credits")
+         end)}
+      end)
+
+    assert texts["en"] ==
+             "The AI account behind the assistant has run out of credit. " <>
+               "An administrator has to top it up or choose another model."
+
+    assert texts["ru"] =~ "закончились средства"
+    assert texts["et"] =~ "krediit on otsas"
+    assert texts["uk"] =~ "закінчилися кошти"
+    assert texts["fr"] =~ "n'a plus de crédit"
+    assert texts["de"] =~ "kein Guthaben mehr"
+
+    for {locale, text} <- texts do
+      refute text =~ ~r/Z\.ai|OpenAI|Anthropic|OpenRouter|try again/i,
+             "#{locale}: #{inspect(text)}"
+
+      rate_limited =
+        Gettext.with_locale(PhoenixKitAgent.Gettext, locale, fn ->
+          Texts.notice("rate_limited")
+        end)
+
+      assert text != rate_limited
+    end
+  end
+
   test "the labels of the permission and of the tabs are in the catalogues" do
     meta = PhoenixKitAgent.permission_metadata()
 

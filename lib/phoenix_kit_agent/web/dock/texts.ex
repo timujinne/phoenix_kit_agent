@@ -205,6 +205,13 @@ defmodule PhoenixKitAgent.Web.Dock.Texts do
   def notice("forbidden"), do: gettext("The assistant is no longer available to you.")
   def notice("ai_disabled"), do: gettext("The AI module is switched off.")
   def notice("rate_limited"), do: gettext("Too many requests at once; try again in a minute.")
+
+  def notice("insufficient_credits"),
+    do:
+      gettext(
+        "The AI account behind the assistant has run out of credit. An administrator has to top it up or choose another model."
+      )
+
   def notice("not_found"), do: gettext("This chat is gone.")
   def notice("budget_exceeded"), do: gettext("The AI budget is used up.")
 
