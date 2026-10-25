@@ -324,7 +324,13 @@ defmodule PhoenixKitAgent.TurnsTest do
         assert request.metadata["source"] == "agent"
         # agent_capture_ai_content is off: the call keeps the bodies out.
         assert request.metadata["content_redacted"] == true
-        assert request.metadata["attribution"] == %{"agent_message_uuid" => message.uuid}
+
+        assert request.metadata["attribution"] == %{
+                 "agent_message_uuid" => message.uuid,
+                 "turn_ref" => turn_ref
+               }
+
+        assert request.metadata["task"] == "agent.chat"
       end
     end
 
@@ -366,6 +372,34 @@ defmodule PhoenixKitAgent.TurnsTest do
       await_end(ctx.chat, turn_ref)
 
       assert %Message{role: "notice", error: "rate_limited"} = List.last(messages(ctx.chat))
+    end
+
+    test "a provider account out of credit is stored under its own code, not as a retry", ctx do
+      error_next(402)
+
+      turn_ref = start!(ctx, "Hi")
+      await_end(ctx.chat, turn_ref)
+
+      assert %Message{role: "notice", error: "insufficient_credits", content: content} =
+               List.last(messages(ctx.chat))
+
+      assert content =~ "run out of credit"
+      refute content =~ "Try again"
+      assert unlocked?(ctx)
+    end
+
+    test "a refused key is stored under its own code, not as a retry", ctx do
+      error_next(401)
+
+      turn_ref = start!(ctx, "Hi")
+      await_end(ctx.chat, turn_ref)
+
+      assert %Message{role: "notice", error: "invalid_api_key", content: content} =
+               List.last(messages(ctx.chat))
+
+      assert content =~ "An administrator has to check"
+      refute content =~ "Try again"
+      assert unlocked?(ctx)
     end
 
     test "an answer that cannot be stored ends the turn with a notice", ctx do
@@ -1855,7 +1889,7 @@ defmodule PhoenixKitAgent.TurnsTest do
         model: endpoint.model,
         status: "success",
         request_type: "vision",
-        cost_cents: cost,
+        cost: journal_cost(cost),
         metadata: %{"source" => "agent"},
         inserted_at: DateTime.truncate(DateTime.utc_now(), :second)
       })
@@ -2072,6 +2106,20 @@ defmodule PhoenixKitAgent.TurnsTest do
                Turns.start(ctx.ref, false, ctx.chat.uuid, "More")
     end
 
+    test "an answer's cost in dollars is kept on its message in whole micro-dollars", ctx do
+      answer_next(answer_with_cost(tool_answer([call("c1", "agenttest_list_items", %{})]), 0.005))
+      answer_next(answer_with_cost(text_answer("Done."), 0.0000025))
+
+      turn_ref = start!(ctx, "Hi")
+      await_end(ctx.chat, turn_ref)
+
+      assert [5_000, 3] =
+               for(
+                 %Message{role: "assistant", cost_micro_usd: cost} <- messages(ctx.chat),
+                 do: cost
+               )
+    end
+
     test "an endpoint without a cost: the money limit does not act, the turn limit does", ctx do
       direct = endpoint_fixture(%{provider: "deepseek", model: "deepseek-chat"})
 
@@ -2084,13 +2132,16 @@ defmodule PhoenixKitAgent.TurnsTest do
       answer_next(text_answer("Fine."))
       turn_ref = start!(ctx, "Hi")
       await_end(ctx.chat, turn_ref)
-      assert %Message{role: "assistant", content: "Fine."} = List.last(messages(ctx.chat))
+
+      assert %Message{role: "assistant", content: "Fine.", cost_micro_usd: nil} =
+               List.last(messages(ctx.chat))
 
       assert {:error, {:limit_reached, :daily_turns}} =
                Turns.start(ctx.ref, false, ctx.chat.uuid, "Again")
     end
 
-    test "the AI budget used up: a notice, and the watchers once a day", ctx do
+    test "the AI budget used up: a notice, and one signal to the watchers, from the AI module",
+         ctx do
       owner = owner_fixture()
       {:ok, _} = PhoenixKitAI.Budget.set_limit(:user_calls, 1)
       ai_request_fixture(ctx.user, ctx.endpoint)
@@ -2104,9 +2155,17 @@ defmodule PhoenixKitAgent.TurnsTest do
       end
 
       refute_received {:model_request, _}
-      assert [%{metadata: %{"notification_text" => text}}] = notifications_of(owner)
-      assert text =~ ctx.user.email
+
+      # Told once, by phoenix_kit_ai (a link to its pages), not by the module
+      # (whose limit notices link to the assistant's spending).
+      assert [%{metadata: %{"notification_link" => link}}] = notifications_of(owner)
+      assert link =~ "/admin/ai/"
+      refute link =~ "/admin/agent/"
       assert notifications_of(ctx.user) == []
+
+      assert Repo.all(
+               from(e in PhoenixKitAgent.Schemas.LimitEvent, where: e.limit_kind == "ai_budget")
+             ) == []
     end
   end
 
@@ -2156,7 +2215,8 @@ defmodule PhoenixKitAgent.TurnsTest do
       await_end(ctx.chat, turn_ref)
 
       assert [%Message{role: "user"}] = messages(ctx.chat)
-      assert [%{cost_cents: 2_000}] = journal(ctx.user)
+      assert [%{cost: cost}] = journal(ctx.user)
+      assert Decimal.equal?(cost, "0.002")
       refute_received {:agent_test_tool, _, _, _}
       assert unlocked?(ctx)
     end
@@ -2181,7 +2241,8 @@ defmodule PhoenixKitAgent.TurnsTest do
       assert [%Message{role: "user"}, %Message{role: "notice", error: "deadline"}] =
                messages(ctx.chat)
 
-      assert [%{cost_cents: 2_000}] = journal(ctx.user)
+      assert [%{cost: cost}] = journal(ctx.user)
+      assert Decimal.equal?(cost, "0.002")
       assert unlocked?(ctx)
     end
 

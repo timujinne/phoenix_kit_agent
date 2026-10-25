@@ -32,7 +32,7 @@ defmodule PhoenixKitAgent.LimitsTest do
       model: endpoint.model,
       status: "success",
       request_type: Keyword.get(opts, :type, "chat"),
-      cost_cents: cost,
+      cost: journal_cost(cost),
       metadata: Keyword.get(opts, :metadata, %{"source" => "agent"}),
       inserted_at: Keyword.get(opts, :at, DateTime.truncate(DateTime.utc_now(), :second))
     })
@@ -233,6 +233,110 @@ defmodule PhoenixKitAgent.LimitsTest do
                Limits.check(settings, ctx.endpoint.uuid)
     end
 
+    test "a priced Anthropic call counts: the daily money limit refuses after it", ctx do
+      claude = endpoint_fixture(%{provider: "anthropic", model: "claude-sonnet-5-5"})
+      settings = limits!(ctx.user, daily_cost_limit_micro_usd: 14_000)
+      assert :ok = Limits.check(settings, claude.uuid)
+
+      # The row phoenix_kit_ai writes for the call: Anthropic reports no cost,
+      # its list price gives one ($2 / $10 per 1M tokens).
+      assert {cost, %{cost_source: "table"} = source} =
+               PhoenixKitAI.CallCost.for_call(claude, "claude-sonnet-5-5", nil, 2_000, 1_000)
+
+      assert Decimal.equal?(cost, "0.014")
+
+      spend!(ctx.user, claude, 14_000,
+        metadata: %{"source" => "agent", "cost_source" => source.cost_source}
+      )
+
+      assert {:error, {:limit_reached, %{kind: :daily_cost, used: 14_000}}} =
+               Limits.check(settings, claude.uuid)
+    end
+
+    test "an Anthropic answer without a cost: phoenix_kit_ai logs its list price, the limit counts it",
+         ctx do
+      {:ok, _} = PhoenixKitAI.enable_system()
+      stub = :anthropic_cost_stub
+      Application.put_env(:phoenix_kit_ai, :req_options, plug: {Req.Test, stub}, retry: false)
+      on_exit(fn -> Application.delete_env(:phoenix_kit_ai, :req_options) end)
+
+      Req.Test.expect(stub, fn conn ->
+        Req.Test.json(conn, %{
+          "model" => "claude-sonnet-5-5",
+          "choices" => [%{"message" => %{"role" => "assistant", "content" => "Hi"}}],
+          "usage" => %{"prompt_tokens" => 2_000, "completion_tokens" => 1_000}
+        })
+      end)
+
+      claude = endpoint_fixture(%{provider: "anthropic", model: "claude-sonnet-5-5"})
+      settings = limits!(ctx.user, daily_cost_limit_micro_usd: 14_000)
+
+      assert {:ok, _} =
+               PhoenixKitAI.complete(claude.uuid, [%{role: "user", content: "Hi"}],
+                 source: "agent",
+                 user_uuid: ctx.user.uuid,
+                 cache: false
+               )
+
+      assert [%{cost: cost, metadata: %{"cost_source" => "table"}}] =
+               Repo.all(from(r in PhoenixKitAI.Request, where: r.user_uuid == ^ctx.user.uuid))
+
+      assert Decimal.equal?(cost, "0.014")
+
+      assert %{day_micro_usd: 14_000} = Limits.usage(ctx.user.uuid)
+
+      assert {:error, {:limit_reached, %{kind: :daily_cost}}} =
+               Limits.check(settings, claude.uuid)
+    end
+
+    test "a manual price counts like a reported cost", ctx do
+      priced =
+        endpoint_fixture(
+          %{
+            provider: "deepseek",
+            model: "deepseek-chat",
+            provider_settings: %{"pricing" => %{"input" => "0.27", "output" => "1.1"}}
+          },
+          scope: scope_of(ctx.owner)
+        )
+
+      settings = limits!(ctx.user, daily_cost_limit_micro_usd: 1_000)
+      spend!(ctx.user, priced, 1_000, metadata: %{"source" => "agent", "cost_source" => "manual"})
+
+      assert {:error, {:limit_reached, %{kind: :daily_cost}}} =
+               Limits.check(settings, priced.uuid)
+    end
+
+    test "an Anthropic model without a price: the money limits do not apply", ctx do
+      unpriced = endpoint_fixture(%{provider: "anthropic", model: "claude-unknown-9"})
+      settings = limits!(ctx.user, daily_cost_limit_micro_usd: 0, monthly_cost_limit_micro_usd: 0)
+
+      assert :ok = Limits.check(settings, unpriced.uuid)
+      refute Limits.money_counted?(unpriced.uuid)
+    end
+
+    test "a picture's description: the money limits apply where phoenix_kit_ai prices it",
+         ctx do
+      claude = endpoint_fixture(%{provider: "anthropic", model: "claude-sonnet-5-5"})
+      unpriced = endpoint_fixture(%{provider: "anthropic", model: "claude-unknown-9"})
+      settings = limits!(ctx.user, daily_cost_limit_micro_usd: 10)
+      spend!(ctx.user, ctx.endpoint, 10)
+
+      # phoenix_kit_ai prices a description like a chat call: on Anthropic by
+      # the list price, so the money limits hold it there too.
+      assert {:error, {:limit_reached, %{kind: :daily_cost}}} =
+               Limits.check(settings, claude.uuid, use: :vision)
+
+      assert Limits.money_counted?(claude.uuid, :vision)
+
+      assert {:error, {:limit_reached, %{kind: :daily_cost}}} =
+               Limits.check(settings, ctx.endpoint.uuid, use: :vision)
+
+      # A model nothing prices counts no money: only the turn limit holds it.
+      assert :ok = Limits.check(settings, unpriced.uuid, use: :vision)
+      refute Limits.money_counted?(unpriced.uuid, :vision)
+    end
+
     test "80 % of a limit: one in-app notice to the user, once per period", ctx do
       settings = limits!(ctx.user, daily_cost_limit_micro_usd: 1_000_000)
       spend!(ctx.user, ctx.endpoint, 800_000)
@@ -405,55 +509,6 @@ defmodule PhoenixKitAgent.LimitsTest do
 
       assert length(notifications(ctx.user)) == 2
       assert length(notifications(ctx.owner)) == 2
-    end
-  end
-
-  # ── the budget of phoenix_kit_ai ────────────────────────────────────
-
-  describe "ai_budget_reached/2" do
-    test "the watchers are told once a day per user, whatever notify_on_limit says", ctx do
-      :ok = Limits.ai_budget_reached(ctx.user.uuid, :global)
-      :ok = Limits.ai_budget_reached(ctx.user.uuid, :user)
-
-      assert [theirs] = notifications(ctx.owner)
-      assert theirs.metadata["notification_text"] =~ ctx.user.email
-      assert notifications(ctx.user) == []
-      assert [%LimitEvent{limit_kind: "ai_budget"}] = events(ctx.user)
-
-      other = user_with(["agent"], "other")
-      :ok = Limits.ai_budget_reached(other.uuid, :global)
-      assert length(notifications(ctx.owner)) == 2
-    end
-
-    for {locale, word} <- [{"et", "tagasi"}, {"ru", "отказ"}] do
-      test "each scope of the budget has its own sentence in the site's language (#{locale})",
-           ctx do
-        Application.put_env(:phoenix_kit, :default_locale, unquote(locale))
-        on_exit(fn -> Application.delete_env(:phoenix_kit, :default_locale) end)
-
-        before = {Gettext.get_locale(PhoenixKitAgent.Gettext), Gettext.get_locale()}
-
-        texts =
-          for scope <- [:global, :endpoint, :user, :user_calls, :other] do
-            who = user_with(["agent"], "budget#{unquote(locale)}#{scope}")
-            :ok = Limits.ai_budget_reached(who.uuid, scope)
-
-            text =
-              ctx.owner
-              |> notifications()
-              |> Enum.map(& &1.metadata["notification_text"])
-              |> Enum.find(&(&1 =~ who.email))
-
-            bare = String.replace(text, who.email, "")
-            refute bare =~ ~r/global|endpoint|user_calls/
-            assert bare =~ unquote(word)
-            refute bare =~ "refused"
-            text
-          end
-
-        assert length(Enum.uniq(texts)) == 5
-        assert {Gettext.get_locale(PhoenixKitAgent.Gettext), Gettext.get_locale()} == before
-      end
     end
   end
 end

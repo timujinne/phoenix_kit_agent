@@ -11,7 +11,11 @@ defmodule PhoenixKitAgent.Web.SettingsLive do
   the ones known not to take tools, the vision model's the ones known not to
   take pictures (both fetched off the page process after it opens). A model
   the page did not offer is refused, and `Config` takes only an existing
-  endpoint that chats. The watchers are chosen among the people who hold
+  endpoint that chats. A newly chosen model must also fit its AI task
+  (`PhoenixKitAI.Tasks.check_selection/2`): the default model `agent.chat`
+  (tools), the vision model `agent.attachment` (pictures). One known not to
+  have what the task needs is refused, and so is one nobody knows about
+  until an admin marks what it can do on its AI endpoint. The watchers are chosen among the people who hold
   `agent.manage`, the Owners and the watchers there are; nobody chosen means
   every Owner. The prompt's change is recorded in the Activity log as a field
   name, never its text (`Config.put_system_prompt/2`); the other values go to
@@ -26,8 +30,13 @@ defmodule PhoenixKitAgent.Web.SettingsLive do
 
   Each form is saved on its own; every save checks the permission again.
 
+  The last card shows what the assistant can use now, for the role the
+  viewer's session acts as (`PhoenixKitAgent.Web.ToolAvailability`): the
+  modules' read and write tools, available or closed and why. It is read when
+  the page opens.
+
   When the default model does not report what a call costs
-  (`PhoenixKitAgent.Models.reports_cost?/1`), the limits say that money is not
+  (`PhoenixKitAgent.Models.reports_cost?/2`), the limits say that money is not
   counted for it and only the turn limit applies.
 
   One setting is not for every manager: `agent_capture_ai_content` (whether the
@@ -49,10 +58,11 @@ defmodule PhoenixKitAgent.Web.SettingsLive do
   import PhoenixKitWeb.Components.Core.Input, only: [translate_error: 1]
   import PhoenixKitWeb.Components.Core.Select, only: [select: 1]
   import PhoenixKitWeb.Components.Core.Textarea, only: [textarea: 1]
+  import PhoenixKitAgent.Web.ToolAvailability, only: [assistant_tools: 1]
 
   alias PhoenixKit.Utils.Routes
   alias PhoenixKitAgent.{Config, Models, UserConfig}
-  alias PhoenixKitAgent.Web.Access
+  alias PhoenixKitAgent.Web.{Access, ToolAvailability}
 
   # The fields of the models form.
   @model_fields ~w(default_endpoint_uuid vision_endpoint_uuid)
@@ -75,7 +85,8 @@ defmodule PhoenixKitAgent.Web.SettingsLive do
        |> assign_form(Config.defaults_changeset(%{}) |> Map.put(:action, nil))
        |> assign_models()
        |> assign_prompt(Config.system_prompt() || "", [])
-       |> assign_watchers()}
+       |> assign_watchers()
+       |> assign(:assistant_tools, ToolAvailability.for_scope(Access.session_scope(socket)))}
     else
       {:ok,
        socket
@@ -223,11 +234,44 @@ defmodule PhoenixKitAgent.Web.SettingsLive do
     end
   end
 
+  # The model kept as it is is not checked again: the form saves both fields.
   defp offered_model(field, uuid, offered, chosen, errors) do
-    if MapSet.member?(offered, uuid),
-      do: {Map.put(chosen, field, uuid), errors},
-      else: {chosen, Map.put(errors, field, [gettext("is not available")])}
+    with true <- MapSet.member?(offered, uuid),
+         :ok <- fits(field, uuid) do
+      {Map.put(chosen, field, uuid), errors}
+    else
+      refusal -> {chosen, Map.put(errors, field, [unfit_text(field, refusal)])}
+    end
   end
+
+  defp fits(field, uuid) do
+    if Map.fetch!(current_models(), field) == uuid,
+      do: :ok,
+      else: PhoenixKitAI.Tasks.check_selection(task_of(field), uuid)
+  end
+
+  defp task_of("default_endpoint_uuid"), do: "agent.chat"
+  defp task_of("vision_endpoint_uuid"), do: "agent.attachment"
+
+  defp unfit_text("default_endpoint_uuid", {:error, {:model_unfit, _missing}}),
+    do: gettext("cannot be used: its model does not take tools, which the assistant needs")
+
+  defp unfit_text("default_endpoint_uuid", {:error, {:model_unverified, _unclear}}),
+    do:
+      gettext(
+        "cannot be used yet: nobody knows whether its model takes tools. Mark what it can do on its AI endpoint first"
+      )
+
+  defp unfit_text("vision_endpoint_uuid", {:error, {:model_unfit, _missing}}),
+    do: gettext("cannot be used: its model does not take pictures")
+
+  defp unfit_text("vision_endpoint_uuid", {:error, {:model_unverified, _unclear}}),
+    do:
+      gettext(
+        "cannot be used yet: nobody knows whether its model takes pictures. Mark what it can do on its AI endpoint first"
+      )
+
+  defp unfit_text(_field, _not_offered), do: gettext("is not available")
 
   defp text_or_blank(value) when is_binary(value), do: value
   defp text_or_blank(_other), do: ""
@@ -620,6 +664,8 @@ defmodule PhoenixKitAgent.Web.SettingsLive do
           </p>
         </div>
       </section>
+
+      <.assistant_tools id="agent-tools" modules={@assistant_tools} subject={:session} />
     </div>
     """
   end

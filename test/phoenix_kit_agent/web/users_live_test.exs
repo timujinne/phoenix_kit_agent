@@ -9,10 +9,10 @@ defmodule PhoenixKitAgent.Web.UsersLiveTest do
 
   import Ecto.Query, only: [from: 2]
 
-  alias PhoenixKit.Settings
+  alias PhoenixKit.{ModuleRegistry, Settings}
   alias PhoenixKit.Users.{Auth, Permissions, Roles}
   alias PhoenixKitAgent.Schemas.UserSettings
-  alias PhoenixKitAgent.Test.LogProbe
+  alias PhoenixKitAgent.Test.{LogProbe, Tools}
   alias PhoenixKitAgent.UserConfig
 
   @path "/en/admin/agent/users"
@@ -24,20 +24,27 @@ defmodule PhoenixKitAgent.Web.UsersLiveTest do
     Application.put_env(:phoenix_kit_ai, :req_options, plug: {Req.Test, @stub}, retry: false)
     on_exit(fn -> Application.delete_env(:phoenix_kit_ai, :req_options) end)
 
-    # OpenRouter's listing: one model with tools, one without.
-    Req.Test.stub(@stub, fn conn ->
-      Req.Test.json(conn, %{
-        "data" => [
-          %{"id" => "a/with-tools", "supported_parameters" => ["tools"]},
-          %{"id" => "a/no-tools", "supported_parameters" => ["temperature"]}
-        ]
-      })
-    end)
+    # What the models can do comes from the AI module's capabilities, never
+    # from a request of the page.
+    Req.Test.stub(@stub, fn _conn -> flunk("the page asked a provider") end)
+    PhoenixKitAI.Guard.reset_caches()
+    on_exit(&PhoenixKitAI.Guard.reset_caches/0)
 
     :ok
   end
 
   defp manager, do: user_with(["agent", "agent.manage"], "manager")
+
+  # An endpoint whose model's tools an admin declared.
+  defp declared(attrs, tools) do
+    model = Map.fetch!(attrs, :model)
+
+    endpoint_fixture(
+      Map.put(attrs, :provider_settings, %{
+        "capabilities" => %{"model" => model, "tools" => tools}
+      })
+    )
+  end
 
   defp activity do
     Repo.all(
@@ -51,7 +58,7 @@ defmodule PhoenixKitAgent.Web.UsersLiveTest do
       user_uuid: user.uuid,
       model: endpoint.model,
       status: "success",
-      cost_cents: cost,
+      cost: journal_cost(cost),
       metadata: %{"source" => "agent"},
       inserted_at: DateTime.truncate(DateTime.utc_now(), :second)
     })
@@ -131,6 +138,39 @@ defmodule PhoenixKitAgent.Web.UsersLiveTest do
       refute has_element?(view, "#agent-user-#{counted.uuid}-money-off")
     end
 
+    test "an Anthropic list price or a manual price counts money; no price is marked", %{
+      conn: conn
+    } do
+      claude =
+        endpoint_fixture(%{name: "Claude", provider: "anthropic", model: "claude-sonnet-5-5"})
+
+      manual =
+        endpoint_fixture(
+          %{
+            name: "Priced",
+            provider: "deepseek",
+            model: "deepseek-chat",
+            provider_settings: %{"pricing" => %{"input" => "0.27", "output" => "1.1"}}
+          },
+          scope: scope_of(owner_fixture())
+        )
+
+      unpriced = endpoint_fixture(%{name: "Unpriced", provider: "anthropic", model: "claude-x-1"})
+
+      users =
+        for {tag, endpoint} <- [claude: claude, manual: manual, unpriced: unpriced] do
+          user = user_with(["agent"], Atom.to_string(tag))
+          Repo.insert!(%UserSettings{user_uuid: user.uuid, endpoint_uuid: endpoint.uuid})
+          {tag, user}
+        end
+
+      {:ok, view, _html} = live(conn, @path)
+
+      refute has_element?(view, "#agent-user-#{users[:claude].uuid}-money-off")
+      refute has_element?(view, "#agent-user-#{users[:manual].uuid}-money-off")
+      assert has_element?(view, "#agent-user-#{users[:unpriced].uuid}-money-off")
+    end
+
     test "a user the assistant is switched off for is marked", %{conn: conn} do
       member = user_with(["agent"], "member")
       Repo.insert!(%UserSettings{user_uuid: member.uuid, enabled: false})
@@ -145,8 +185,8 @@ defmodule PhoenixKitAgent.Web.UsersLiveTest do
     setup %{conn: conn} do
       admin = manager()
       member = user_with(["agent"], "member")
-      with_tools = endpoint_fixture(%{name: "Fast", model: "a/with-tools"})
-      no_tools = endpoint_fixture(%{name: "Plain", model: "a/no-tools"})
+      with_tools = declared(%{name: "Fast", model: "a/with-tools"}, "yes")
+      no_tools = declared(%{name: "Plain", model: "a/no-tools"}, "no")
       other = endpoint_fixture(%{name: "Other", provider: "deepseek", model: "deepseek-chat"})
 
       %{
@@ -210,6 +250,25 @@ defmodule PhoenixKitAgent.Web.UsersLiveTest do
 
       view
       |> form("#agent-user-form", user_settings: %{endpoint_uuid: ctx.with_tools.uuid})
+      |> render_change()
+
+      refute has_element?(view, "#agent-user-money-off")
+    end
+
+    test "the form counts money on an Anthropic model with a list price", ctx do
+      claude =
+        endpoint_fixture(%{name: "Claude", provider: "anthropic", model: "claude-sonnet-5-5"})
+
+      view = open(ctx.conn, ctx.member)
+
+      view
+      |> form("#agent-user-form", user_settings: %{endpoint_uuid: ctx.other.uuid})
+      |> render_change()
+
+      assert has_element?(view, "#agent-user-money-off")
+
+      view
+      |> form("#agent-user-form", user_settings: %{endpoint_uuid: claude.uuid})
       |> render_change()
 
       refute has_element?(view, "#agent-user-money-off")
@@ -368,6 +427,43 @@ defmodule PhoenixKitAgent.Web.UsersLiveTest do
       assert row.updated_by_uuid == ctx.admin.uuid
       assert row.notify_user_uuids == []
       assert Repo.get(UserSettings, stranger.uuid) == nil
+    end
+
+    test "a new model the assistant's AI task cannot use is refused, with why", ctx do
+      view = open(ctx.conn, ctx.member)
+
+      view
+      |> form("#agent-user-form", user_settings: %{endpoint_uuid: ctx.no_tools.uuid})
+      |> render_submit()
+
+      assert has_element?(view, "#agent-user-form p.text-error", "does not take tools")
+      assert Repo.get(UserSettings, ctx.member.uuid) == nil
+
+      view
+      |> form("#agent-user-form", user_settings: %{endpoint_uuid: ctx.other.uuid})
+      |> render_submit()
+
+      assert has_element?(
+               view,
+               "#agent-user-form p.text-error",
+               "nobody knows whether its model takes tools"
+             )
+
+      assert Repo.get(UserSettings, ctx.member.uuid) == nil
+    end
+
+    test "the user's model kept as it is is not checked again", ctx do
+      Repo.insert!(%UserSettings{user_uuid: ctx.member.uuid, endpoint_uuid: ctx.other.uuid})
+      view = open(ctx.conn, ctx.member)
+
+      view |> form("#agent-user-form", user_settings: %{daily_turn_limit: "3"}) |> render_submit()
+
+      assert has_element?(view, "#flash-info")
+
+      assert %UserSettings{endpoint_uuid: endpoint_uuid, daily_turn_limit: 3} =
+               Repo.get!(UserSettings, ctx.member.uuid)
+
+      assert endpoint_uuid == ctx.other.uuid
     end
 
     test "an endpoint that was not offered is refused", ctx do
@@ -542,6 +638,78 @@ defmodule PhoenixKitAgent.Web.UsersLiveTest do
     end
   end
 
+  describe "with agent.manage: what the user's assistant can use" do
+    setup %{conn: conn} do
+      :ok = ModuleRegistry.register(Tools)
+      on_exit(fn -> ModuleRegistry.unregister(Tools) end)
+
+      # The manager does not hold `dashboard`: the card is the user's, not theirs.
+      %{conn: log_in(conn, manager())}
+    end
+
+    defp user_tool(name), do: "#agent-user-tools [data-tool='#{name}']"
+
+    defp user_tool_status(view, name, status),
+      do: has_element?(view, user_tool(name) <> "[data-status='#{status}']")
+
+    defp user_tool_reason(view, name, reason),
+      do: has_element?(view, user_tool(name) <> " [data-reason='#{reason}']")
+
+    test "the form shows the tools by the user's roles, available or closed and why", %{
+      conn: conn
+    } do
+      member = user_with(["agent", "dashboard"], "member")
+      view = open(conn, member)
+
+      assert has_element?(view, "#agent-user-tools-note", "by the user's roles")
+      assert has_element?(view, "#agent-user-tools-module-agent_test_tools", "Agent test tools")
+
+      assert user_tool_status(view, "agenttest.list_items", "available")
+
+      assert user_tool_status(view, "agenttest.write_item", "closed")
+      assert user_tool_reason(view, "agenttest.write_item", "agent_writes_off")
+      refute user_tool_reason(view, "agenttest.write_item", "no_permission")
+
+      assert user_tool_status(view, "agenttest.secret_items", "closed")
+      assert user_tool_reason(view, "agenttest.secret_items", "no_permission")
+    end
+
+    test "a user without the tool's permission: closed to their assistant", %{conn: conn} do
+      {:ok, _} = Settings.update_setting("api_session_write_modules", "agent_test_tools")
+      member = user_with(["agent"], "member")
+      view = open(conn, member)
+
+      assert user_tool_status(view, "agenttest.list_items", "closed")
+      assert user_tool_reason(view, "agenttest.list_items", "no_permission")
+      assert user_tool_status(view, "agenttest.write_item", "closed")
+      assert user_tool_reason(view, "agenttest.write_item", "no_permission")
+      refute user_tool_reason(view, "agenttest.write_item", "agent_writes_off")
+    end
+
+    test "every role of the user counts, whatever role a session would act as", %{conn: conn} do
+      {:ok, _} = Settings.update_setting("role_switcher_enabled", "true")
+      member = user_with(["agent"], "member")
+
+      {:ok, second} =
+        Roles.create_role(%{name: "AgentTools#{System.unique_integer([:positive])}"})
+
+      {:ok, _} = Permissions.grant_permission(second.uuid, "dashboard")
+      {:ok, _} = Roles.assign_role(member, second.name)
+
+      view = open(conn, member)
+
+      assert user_tool_status(view, "agenttest.list_items", "available")
+    end
+
+    test "the card closes with the form", %{conn: conn} do
+      member = user_with(["agent", "dashboard"], "member")
+      view = open(conn, member)
+
+      view |> element("#agent-user-cancel") |> render_click()
+      refute has_element?(view, "#agent-user-tools")
+    end
+  end
+
   describe "an Owner's settings" do
     test "a manager who is not an Owner can neither open nor save them", %{conn: conn} do
       owner = owner_fixture()
@@ -636,6 +804,112 @@ defmodule PhoenixKitAgent.Web.UsersLiveTest do
       view |> form("#agent-user-form", user_settings: %{daily_turn_limit: "1"}) |> render_submit()
 
       assert Repo.get(UserSettings, member.uuid) == nil
+    end
+  end
+
+  describe "a user blocked by the AI guard" do
+    setup %{conn: conn} do
+      {:ok, _} = PhoenixKitAI.enable_system()
+      owner = owner_fixture()
+      admin = user_with(["agent", "agent.manage"], "manager")
+      member = user_with(["agent"], "member")
+      %{conn: conn, owner: owner, admin: admin, member: member}
+    end
+
+    defp block!(by, user) do
+      {:ok, block} =
+        PhoenixKitAI.Guard.block(scope_of(by), "agent.chat", user.uuid, "Private chats", nil)
+
+      block
+    end
+
+    defp ai_manager(tag) do
+      user_with(["agent", "agent.manage", "ai", "ai.manage"], tag)
+    end
+
+    test "is marked; the reason only for a viewer with ai.manage", ctx do
+      block!(ctx.owner, ctx.member)
+
+      {:ok, view, _html} = live(log_in(ctx.conn, ctx.admin), @path)
+      assert has_element?(view, "#agent-user-#{ctx.member.uuid}-blocked")
+      refute has_element?(view, "#agent-user-#{ctx.member.uuid}-block-reason")
+      refute render(view) =~ "Private chats"
+
+      {:ok, view, _html} = live(log_in(ctx.conn, ai_manager("ai-manager")), @path)
+      assert has_element?(view, "#agent-user-#{ctx.member.uuid}-block-reason", "Private chats")
+
+      refute has_element?(view, "#agent-user-#{ctx.admin.uuid}-blocked")
+    end
+
+    test "is lifted by a holder of agent.manage", ctx do
+      block!(ctx.owner, ctx.member)
+      {:ok, view, _html} = live(log_in(ctx.conn, ctx.admin), @path)
+
+      view |> element("#agent-user-lift-#{ctx.member.uuid}") |> render_click()
+
+      assert has_element?(view, "#flash-info")
+      refute has_element?(view, "#agent-user-#{ctx.member.uuid}-blocked")
+      refute PhoenixKitAI.GuardBlocks.blocked?("agent.chat", ctx.member.uuid)
+
+      assert [%PhoenixKitAI.GuardBlock{lifted_by_uuid: lifted_by}] =
+               Repo.all(PhoenixKitAI.GuardBlock)
+
+      assert lifted_by == ctx.admin.uuid
+    end
+
+    test "one's own block: no button, and the event is refused", ctx do
+      block!(ctx.owner, ctx.admin)
+      {:ok, view, _html} = live(log_in(ctx.conn, ctx.admin), @path)
+
+      assert has_element?(view, "#agent-user-#{ctx.admin.uuid}-blocked")
+      refute has_element?(view, "#agent-user-lift-#{ctx.admin.uuid}")
+
+      render_hook(view, "lift_block", %{"user" => ctx.admin.uuid})
+
+      assert has_element?(view, "#flash-error")
+      assert PhoenixKitAI.GuardBlocks.blocked?("agent.chat", ctx.admin.uuid)
+    end
+
+    test "an Owner's block: no button for an Admin, and the event is refused", ctx do
+      block!(ctx.owner, ctx.owner)
+      {:ok, view, _html} = live(log_in(ctx.conn, ctx.admin), @path)
+
+      refute has_element?(view, "#agent-user-lift-#{ctx.owner.uuid}")
+      render_hook(view, "lift_block", %{"user" => ctx.owner.uuid})
+
+      assert has_element?(view, "#flash-error")
+      assert PhoenixKitAI.GuardBlocks.blocked?("agent.chat", ctx.owner.uuid)
+    end
+
+    test "nothing is lifted once agent.manage is taken away while the page is open", ctx do
+      # ai.manage alone would let the guard lift it: the page itself refuses.
+      viewer = ai_manager("losing")
+      block!(ctx.owner, ctx.member)
+      {:ok, view, _html} = live(log_in(ctx.conn, viewer), @path)
+
+      [role] =
+        viewer
+        |> Roles.get_user_roles()
+        |> Enum.reject(&(&1 in ["Owner", "Admin", "User"]))
+        |> Enum.map(&Roles.get_role_by_name/1)
+
+      :ok = Permissions.revoke_permission(role.uuid, "agent.manage")
+
+      view |> element("#agent-user-lift-#{ctx.member.uuid}") |> render_click()
+
+      assert has_element?(view, "#flash-error")
+      assert PhoenixKitAI.GuardBlocks.blocked?("agent.chat", ctx.member.uuid)
+    end
+
+    test "a crafted event without a user, or for one not blocked, changes nothing", ctx do
+      {:ok, view, _html} = live(log_in(ctx.conn, ctx.admin), @path)
+
+      render_hook(view, "lift_block", %{})
+      render_hook(view, "lift_block", %{"user" => "nonsense"})
+      render_hook(view, "lift_block", %{"user" => ctx.member.uuid})
+
+      assert has_element?(view, "#agent-users")
+      assert Repo.all(PhoenixKitAI.GuardBlock) == []
     end
   end
 

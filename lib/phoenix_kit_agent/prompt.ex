@@ -3,7 +3,19 @@ defmodule PhoenixKitAgent.Prompt do
   The system prompt of a turn (spec §7.1), put together in the order of
   priority, each part separated by a blank line:
 
-    1. the module's prompt (`agent_system_prompt`, `PhoenixKitAgent.Config`);
+    1. the module's prompt (`agent_system_prompt`, `PhoenixKitAgent.Config`),
+       then the module's own rule for writes, always there: a tool that
+       changes data only proposes the change, which waits for the user's
+       confirmation in the chat, and the model never says it is done before a
+       confirmation message says so, nor asks again for a change still
+       waiting (`PhoenixKitAgent.Confirmations`); then, when the AI guard
+       has the `agent.chat` task flag off-purpose requests
+       (`PhoenixKitAI.Guard.self_flag?/1`), the guard's instruction
+       (`PhoenixKitAI.Guard.self_flag_instruction/1`) and how to flag: the
+       marker `⟦off_purpose: <reason>⟧` at the very end of the answer, which
+       the turn cuts off (`PhoenixKitAgent.Turns.Runner`). It stands above
+       everything the admin and the user write, so their instructions cannot
+       undo it, and above the date, so the prompt's cached prefix holds;
     2. the host's addendum — `config :phoenix_kit_agent, prompt_addendum:
        {Mod, :fun}`: what an order is, the statuses, the language of the
        answer. `Mod.fun(ctx)` is called with `%{user_uuid:, locale:}` when it
@@ -56,6 +68,30 @@ defmodule PhoenixKitAgent.Prompt do
   alias PhoenixKit.Utils.TimeZone
   alias PhoenixKitAgent.{Config, UserConfig}
 
+  # §12 Ф2 (m8): what the model must know of a write. The outcome reaches it
+  # as a "[confirmation] …" message in the next turn
+  # (`PhoenixKitAgent.Turns.History`).
+  @write_rule Enum.join(
+                [
+                  "A tool that changes data does not change it when you call it: it proposes " <>
+                    "the change, which waits for the user to confirm it in the chat, and your " <>
+                    "turn ends there.",
+                  "Say what you propose along with the call; never say that it is done until " <>
+                    "the system's confirmation message (\"[confirmation] done: …\", in the " <>
+                    "user's language) says so.",
+                  "A change the system says is waiting (\"[confirmation] waiting: …\", in the " <>
+                    "user's language) is still the user's to run or cancel: do not ask for it " <>
+                    "again."
+                ],
+                "\n"
+              )
+
+  # How the model flags an off-purpose request (spec §8.2 B): the marker the
+  # turn looks for at the very end of the answer.
+  @flag_rule "To flag a request as off-purpose, end your answer with the line " <>
+               "⟦off_purpose: <the reason in a few words>⟧ and write nothing after it. " <>
+               "Never write that marker otherwise."
+
   @name_max 120
   @path_max 200
   @page_context_max 200
@@ -82,6 +118,8 @@ defmodule PhoenixKitAgent.Prompt do
 
     [
       Config.system_prompt(),
+      @write_rule,
+      self_flag(),
       addendum(user_uuid, locale),
       effective.system_prompt,
       personal(effective.personal_instructions),
@@ -89,6 +127,18 @@ defmodule PhoenixKitAgent.Prompt do
     ]
     |> Enum.filter(&(is_binary(&1) and String.trim(&1) != ""))
     |> Enum.join("\n\n")
+  end
+
+  # ── 1. the guard's off-purpose rule ───────────────────────────────────
+
+  defp self_flag do
+    with true <- PhoenixKitAI.Guard.self_flag?("agent.chat"),
+         instruction when is_binary(instruction) <-
+           PhoenixKitAI.Guard.self_flag_instruction("agent.chat") do
+      instruction <> "\n" <> @flag_rule
+    else
+      _off -> nil
+    end
   end
 
   # ── 2. the host's addendum ────────────────────────────────────────────

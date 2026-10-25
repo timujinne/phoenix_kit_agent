@@ -5,14 +5,17 @@ defmodule PhoenixKitAgent.Spend do
   messages: a row of the user (`user_uuid`) whose `metadata.source` is
   `"agent"` — every model call of the module passes both, so a call that
   describes an attachment is counted too. The journal is not pruned by age, so
-  the month never loses rows. The cost is in micro-dollars ($1 = 1_000_000;
-  `cost_cents` of the journal, whatever its name says), and only endpoints that
-  report a cost add to it.
+  the month never loses rows. The journal keeps a cost in dollars (`cost`, a
+  `numeric` that can be finer than a micro-dollar); the sums are in
+  micro-dollars ($1 = 1_000_000): each window is added up in dollars and only
+  then rounded, half up, to a whole micro-dollar
+  (`PhoenixKitAgent.Config.cost_to_micro/1`) — two rows of $0.0000004 are
+  `1`, not `0`. Only endpoints that report a cost add to it.
 
   Every row with a cost counts, whatever its `status`: a call that failed or
   timed out after the provider billed it is money spent all the same. Today
   `phoenix_kit_ai` writes a cost only on its `"success"` rows (a failed call is
-  logged with `cost_cents` `NULL`, which adds nothing), so the sums equal a
+  logged with `cost` `NULL`, which adds nothing), so the sums equal a
   success-only count. For the same reason the queries do not filter on
   `status = 'success'` and cannot use core's partial index
   `phoenix_kit_ai_requests_user_spend_idx`; they go by the journal's
@@ -31,6 +34,7 @@ defmodule PhoenixKitAgent.Spend do
   alias PhoenixKit.RepoHelper
   alias PhoenixKit.Settings
   alias PhoenixKit.Utils.TimeZone
+  alias PhoenixKitAgent.Config
   alias PhoenixKitAgent.Schemas.{Conversation, Message}
   alias PhoenixKitAI.Request
 
@@ -95,7 +99,8 @@ defmodule PhoenixKitAgent.Spend do
   @doc """
   Everyone who used the assistant this month (the local month of `now`): a
   request in the journal or a turn. User uuids; a journal row whose user was
-  deleted has none and is left out.
+  deleted has none and is left out, and so is a call the AI guard refused
+  (`metadata.refused`): it was never made.
   """
   @spec users_this_month(DateTime.t()) :: [String.t()]
   def users_this_month(now \\ DateTime.utc_now()) do
@@ -105,6 +110,7 @@ defmodule PhoenixKitAgent.Spend do
       from(r in Request,
         where:
           not is_nil(r.user_uuid) and fragment("?->>'source' = 'agent'", r.metadata) and
+            fragment("coalesce(?->>'refused', 'false') <> 'true'", r.metadata) and
             r.inserted_at >= ^from and r.inserted_at < ^to,
         distinct: true,
         select: r.user_uuid
@@ -157,23 +163,21 @@ defmodule PhoenixKitAgent.Spend do
         group_by: r.user_uuid,
         select: {
           r.user_uuid,
-          coalesce(sum(r.cost_cents), 0),
+          coalesce(sum(r.cost), 0),
           coalesce(
-            filter(sum(r.cost_cents), r.inserted_at >= ^day_from and r.inserted_at < ^day_to),
+            filter(sum(r.cost), r.inserted_at >= ^day_from and r.inserted_at < ^day_to),
             0
           )
         }
       )
       |> RepoHelper.repo().all()
       |> Map.new(fn {user_uuid, month, day} ->
-        {user_uuid, %{day_micro_usd: to_int(day), month_micro_usd: to_int(month)}}
+        {user_uuid,
+         %{day_micro_usd: Config.cost_to_micro(day), month_micro_usd: Config.cost_to_micro(month)}}
       end)
 
     Map.new(user_uuids, fn uuid ->
       {uuid, Map.get(totals, uuid, %{day_micro_usd: 0, month_micro_usd: 0})}
     end)
   end
-
-  defp to_int(%Decimal{} = value), do: Decimal.to_integer(value)
-  defp to_int(value) when is_integer(value), do: value
 end

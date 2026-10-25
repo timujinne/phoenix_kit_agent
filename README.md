@@ -14,14 +14,17 @@ migration chain, run by `mix phoenix_kit.update`), the permissions `agent` and
 `agent.manage`, the module defaults under Settings → AI Agent, a hidden Storage
 library for attachments and the cleanup when a user is deleted; the chats and
 their messages (`PhoenixKitAgent.Conversations` — session-bound, owner-only,
-with a PubSub topic per chat) and the read-only turn loop
-(`PhoenixKitAgent.Turns` — locks, rounds of model and tool calls over the
-session's own read tools, stop and deadline), the per-user settings
+with a PubSub topic per chat) and the turn loop (`PhoenixKitAgent.Turns` —
+locks, rounds of model and tool calls over the session's own tools, stop and
+deadline), the writes the user confirms in the chat
+(`PhoenixKitAgent.Confirmations`, below), the per-user settings
 (`PhoenixKitAgent.UserConfig` — the user's own value, else the module default:
 the model, the admin's prompt, the limits, the on/off switch and the personal
 instructions), the system prompt put together in the order of priority
 (`PhoenixKitAgent.Prompt`), Admin → AI Agent → Users, where an admin with
-`agent.manage` sees every user's model, limits and spending and sets them, the
+`agent.manage` sees every user's model, limits and spending and sets them
+(with what the assistant can use now — on Settings → AI Agent for the
+viewer's session, in the user's form by the user's roles), the
 spending and turn limits (`PhoenixKitAgent.Limits` — checked before each turn,
 with a notice in the chat and notifications to the user and the watchers) and
 Admin → AI Agent → Spending, what everyone spent today and this month, and the
@@ -83,6 +86,57 @@ The tools called from the panel get the user's locale and the endpoint's URL as
 their request context, and the client address only when the host's LiveView
 socket passes `:peer_data` and `:x_headers` in its `connect_info`.
 
+## Changes the user confirms
+
+The assistant never writes on its own. It sees the write tools of a module only
+when the module's box "Agent may act" is ticked in Settings → API (core's
+setting `api_session_write_modules`, none by default; API keys do not read it),
+and it opens nothing beyond what core lists for the session
+(`Executor.visible_for/3` and `execute_as/5` with `allow: :all`). Core answers
+such a call with a preview and holds it in a confirmation bound to the user;
+the turn ends there — the model is not called again, so no answer can say the
+change was made — and the chat shows a card:
+
+  * core's preview of the change (its `operation_preview` component, read with
+    the session through `PhoenixKit.API.Confirm.get_for_user/2`) and the
+    arguments the model sent, as plain text;
+  * "Run" runs it (`Executor.redeem_as/6`, with the same tool and arguments,
+    under the rights of the session that clicks, checked again from the
+    start); "Cancel the change" turns it down; once its time ran out
+    (`api_user_confirm_ttl_seconds` of core), "Ask again" asks for the same
+    change again, a new card. When the data changed since the preview, the
+    card says so and a new card with the fresh preview follows.
+
+At most one change of a round waits; a second one of the same answer is
+refused to the model, and so is any other call of that answer after it (the
+turn ends there). The same change asked for again while its card waits is
+refused too: one card per change. This includes "Ask again" on an expired
+card when a later turn has already proposed the same change. A click is
+refused while a turn of the user or another click runs, and no message starts
+a turn while a click runs, however
+long it takes (the click keeps its lock fresh; a lock left by a node that went
+down frees the user 30 s after its last keep). A click calls no model and
+spends no turn of the limits; it runs in a task of the module's own
+supervisor, not linked to the panel. A refusal before the change is made
+(the session, the rights, the module's box, the tool's own check, the rate
+limit) leaves the card waiting with its reason. What became of a card is a
+notice with the same confirmation uuid (`confirmed`, `rejected`, `expired`,
+`changed`, `failed`), and the model reads it in the next turn as a fixed phrase
+of the module — "[confirmation] done: <tool>" in the user's language — never
+the tool's result; a card with no outcome yet reads "[confirmation] waiting:
+<tool>". `failed` means the handler failed after the confirmation was spent; a
+confirmation spent by a click that was lost before it said so is taken as
+done, and one core has deleted as run out. A card that stopped waiting with no
+click to say so (it ran out, or its click was lost with its node) gets its
+notice when the panel opens the chat and before a turn reads the history, so it
+never reads as waiting; a card the user may no longer run (the right to its
+tool is gone) keeps "Cancel the change". The module's prompt tells the model
+that a write is a proposal that waits, never to be said done before such a
+message, nor asked for again while it waits. A card still waiting is found
+again when the panel is opened again, even one further back than the messages
+the panel loads (it is shown above them); a borrowed session gets no panel and
+no click.
+
 ## Attachments
 
 A user adds png/jpg/webp/heic pictures, PDFs, xlsx/csv sheets and txt/md
@@ -120,12 +174,13 @@ so too.
 
 How a picture reaches the model (decided 2026-10-20):
 
-  * A model known to take images (OpenRouter lists what each model takes) is
+  * A model known to take images (`PhoenixKitAI.Capabilities`: the
+    provider's catalogue, or what an admin declared on the endpoint) is
     sent the pixels in the picture's own turn only; later turns carry a line
     that names the file and the assistant's own earlier answer, not a second
     (paid) description.
-  * A model whose abilities are not known (any provider but OpenRouter, or a
-    model that declares nothing) is taken for a blind one: the vision model
+  * A model whose abilities are not known (a provider without a catalogue
+    and nothing declared on the endpoint) is taken for a blind one: the vision model
     describes the picture. With no vision model set, `Attachments.add/4`
     refuses a picture at once (`no_vision_model`), before anything is stored;
     a scan, known to be one only once it is read, fails with the same code.
@@ -175,15 +230,20 @@ fails with `pdf_tools_missing` / `image_tools_missing`, nothing else breaks.
 Per user, the user's own value else the module default (Settings → AI Agent):
 money per day and per month and turns per day. Money is what the AI request
 journal of `phoenix_kit_ai` recorded for the user's assistant calls
-(`metadata.source = "agent"`, attachment descriptions included), in
-micro-dollars (`$1 = 1_000_000`); a turn is one message the user sent. The day
-and the month are those of the site time zone. Money counts only on an endpoint
-that reports what a call cost (today OpenRouter); on another only the turn
-limit applies, and the admin pages say so. A picture's description is held to
-the money limits of the **vision** endpoint it is paid on, not of the chat
-endpoint: when the vision endpoint reports no cost, the money limits do not
-cover descriptions at all (only the turn limit and the `phoenix_kit_ai` budget
-stop them): such an endpoint reports no cost to count.
+(`metadata.source = "agent"`, attachment descriptions included). The journal
+holds dollars; the module counts them as whole micro-dollars (`$1 = 1_000_000`),
+each day's and month's sum rounded half up once; a turn is one message the user
+sent. The day and the month are those of the site time zone. Money counts only on an endpoint
+whose calls get a cost in the journal (`PhoenixKitAI.reports_cost?/1`: the
+provider reports it, as OpenRouter does, or `phoenix_kit_ai` prices the model
+from the operator's catalogue, a manual price on the endpoint or Anthropic's
+list price); on another only the turn limit applies, and the admin pages say
+so. A picture's description is held to the money limits of the **vision**
+endpoint it is paid on, not of the chat endpoint, and `phoenix_kit_ai` prices a
+description like a chat call, from the same sources: when nothing prices the
+vision endpoint's model, the money limits do not cover descriptions at all
+(only the turn limit and the `phoenix_kit_ai` budget stop them): such an
+endpoint has no cost to count.
 
 The limits are checked when a turn starts; a turn that started under them runs
 to its end. A limit used up refuses the turn with a notice in the chat (one per
@@ -192,10 +252,47 @@ journal row with a cost, a failed call's included. The
 user is told in the app at 80 % of a limit and when it is reached; the
 watchers (setting `agent_limit_watchers`, empty meaning every Owner, plus the
 user's own `notify_user_uuids`) get a notification of type `agent_limit` when
-the user's `notify_on_limit` is on, and whenever the `phoenix_kit_ai` budget
-refuses the user's assistant — each at most once per limit and period; with
+the user's `notify_on_limit` is on, at most once per limit and period; with
 `notify_on_limit` switched on later in a period, the watchers still hear of
-that period.
+that period. A refusal of the `phoenix_kit_ai` budget is told by
+`phoenix_kit_ai` itself, to its watchers and to the module's (below); the
+chat says the budget is used up.
+
+## The AI task guard
+
+The module declares two AI tasks of `phoenix_kit_ai` (`ai_tasks/0`):
+`agent.chat` (the calls of a turn; needs tools) and `agent.attachment` (a
+picture described by the vision model; needs images in). Both are private
+(the reasons of their flags and blocks are shown only to holders of
+`ai.manage`), share the block group `free_text` with the AI Playground, and
+have no per-user limits in the guard (`user_limits: false`): the module's
+own limits above stay the per-user ones; the guard adds only limits of the
+task. Its watchers are `agent_limit_watchers` and, with `notify_on_limit`,
+the user's `notify_user_uuids`, never the user.
+
+  * A turn is admitted once, after the module's limits
+    (`PhoenixKitAI.Guard.admit/4`); its calls carry the admission, so a turn
+    that started runs to its end. A blocked user, or a task over its limit,
+    gets a notice in the chat (`task_blocked`, `task_limit_exceeded`) and
+    nothing is sent or stored.
+  * A model the guard refuses is a notice of its own (`model_unfit`,
+    `model_unverified`, `no_provider_for_params`).
+  * When the task flags off-purpose requests (its guard mode), the system
+    prompt carries the guard's instruction and the marker
+    `⟦off_purpose: <reason>⟧`, above the admin's and the user's
+    instructions. The turn cuts the marker off the end of an answer before
+    it is stored and reports it, once per turn; a marker anywhere else, or in
+    a tool's result, flags nothing. With `agent_capture_ai_content` on, the
+    AI journal keeps the model's answer as it came, marker and reason
+    included: the reason is then seen wherever the journal is, by every
+    holder of `ai` (`/admin/ai/usage`), not only by `ai.manage`. The chat
+    message itself never has it.
+  * Settings → AI Agent and AI Agent → Users refuse a newly chosen model that
+    does not fit its task (`PhoenixKitAI.Tasks.check_selection/2`), or that
+    nobody knows to fit until an admin marks what it can do on its endpoint.
+  * AI Agent → Users shows who is blocked (the reason only to `ai.manage`)
+    and lets a holder of `agent.manage` lift another person's block (never
+    their own, never an Owner's unless they are an Owner).
 
 "Stop" and the turn deadline ask the turn to stop between its steps, so a model
 call under way finishes and its cost reaches the journal; a turn still running
@@ -230,7 +327,7 @@ config :phoenix_kit_agent, page_context: {MyApp.Agent, :page_context}
 ```
 
 The system prompt of a turn is, in this order: the module's prompt (Settings →
-AI Agent), the host's addendum, the admin's prompt for the user, the user's
+AI Agent) and the module's fixed rule for writes, the host's addendum, the admin's prompt for the user, the user's
 personal instructions (marked as ranking below the rest), and the context of the
 session — the user's name, the role the session acts as, the locale, the date
 (not the time, so the prompt stays cacheable) in the site time zone, the path of
@@ -268,6 +365,11 @@ end
 The module requires `phoenix_kit_ai` to be enabled (`required_modules/0` is
 `["ai"]`) and is switched on in Admin > Modules; it is off by default
 (setting `agent_enabled`).
+
+It needs `phoenix_kit` 2.64 or later with its migrations run up to V223 (`mix
+phoenix_kit.update`), which keeps the AI journal's cost in dollars (`cost`):
+before V223 every limit check fails on the missing column, and so does every
+turn.
 
 ## Development
 

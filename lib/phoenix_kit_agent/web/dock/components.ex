@@ -1,7 +1,7 @@
 defmodule PhoenixKitAgent.Web.Dock.Components do
   @moduledoc """
   The pieces of the chat panel (`PhoenixKitAgent.Web.Dock`): one message of
-  the feed and a file waiting for a message.
+  the feed, a confirmation card and a file waiting for a message.
 
   A message comes as `PhoenixKitAgent.Conversations` hands it to a client: a
   tool call has only its summary (`tool_summary`: the tool's name, the
@@ -9,12 +9,19 @@ defmodule PhoenixKitAgent.Web.Dock.Components do
   returned, and the panel shows no more than that. A model answer is
   markdown, shown by `PhoenixKitAgent.Web.Markdown` (no outside pictures, no
   raw HTML, links with their domain).
+
+  A confirmation card (a `tool` message with its `card`,
+  `PhoenixKitAgent.Confirmations.cards/4`) shows core's preview through
+  core's `operation_preview` component and the arguments the model sent as
+  plain text: every value is escaped by HEEx, nothing of it is markdown or a
+  link.
   """
 
   use Phoenix.Component
   use Gettext, backend: PhoenixKitAgent.Gettext
 
   import PhoenixKitWeb.Components.Core.Icon, only: [icon: 1]
+  import PhoenixKitWeb.Components.Core.OperationPreview, only: [operation_preview: 1]
 
   alias PhoenixKit.Settings
   alias PhoenixKit.Utils.TimeZone
@@ -51,6 +58,12 @@ defmodule PhoenixKitAgent.Web.Dock.Components do
     """
   end
 
+  def feed_message(%{message: %Message{role: "tool", card: %{}}} = assigns) do
+    ~H"""
+    <.confirmation_card id={@id} message={@message} card={@message.card} />
+    """
+  end
+
   def feed_message(%{message: %Message{role: "tool"}} = assigns) do
     assigns = assign(assigns, :summary, assigns.message.tool_summary || %{})
 
@@ -69,11 +82,22 @@ defmodule PhoenixKitAgent.Web.Dock.Components do
     """
   end
 
+  def feed_message(%{message: %Message{role: "notice", tool_outcome: outcome}} = assigns)
+      when is_binary(outcome) and outcome != "" do
+    ~H"""
+    <div id={@id} data-role="notice" data-outcome={@message.tool_outcome} class="flex items-center gap-2 px-1 text-xs opacity-70">
+      <.icon name={settled_icon(@message.tool_outcome)} class="w-3.5 h-3.5 shrink-0" />
+      <span>{Texts.card_outcome(@message.tool_outcome)}</span>
+      <span :if={@message.tool_name} class="font-mono truncate">{@message.tool_name}</span>
+    </div>
+    """
+  end
+
   def feed_message(%{message: %Message{role: "notice"}} = assigns) do
     ~H"""
     <div id={@id} data-role="notice" class="alert alert-soft alert-warning py-2 text-xs">
       <.icon name="hero-information-circle" class="w-4 h-4" />
-      <span>{Texts.notice(@message.error) || @message.content}</span>
+      <span>{Texts.notice(@message.error, @message.content)}</span>
     </div>
     """
   end
@@ -81,6 +105,94 @@ defmodule PhoenixKitAgent.Web.Dock.Components do
   def feed_message(assigns) do
     ~H"""
     <div id={@id} class="hidden"></div>
+    """
+  end
+
+  @doc """
+  A write that waits for the user's confirmation, or what became of it: the
+  preview core holds for it and the arguments the model sent while it waits,
+  with "Run" and "Cancel the change"; "Ask again" once it ran out.
+  """
+  attr(:id, :string, required: true)
+  attr(:message, Message, required: true)
+  attr(:card, :map, required: true)
+
+  def confirmation_card(assigns) do
+    ~H"""
+    <div
+      id={@id}
+      data-role="card"
+      data-state={@card.state}
+      class={[
+        "rounded-box border p-3 text-sm space-y-3 transition-colors",
+        @card.state == "waiting" && "border-primary/40 bg-primary/5",
+        @card.state != "waiting" && "border-base-300"
+      ]}
+    >
+      <div class="flex items-center gap-2">
+        <.icon name={card_icon(@card.state)} class="w-4 h-4 shrink-0" />
+        <span class="font-medium">{Texts.card_title(@card.state)}</span>
+        <span class="ml-auto font-mono text-xs opacity-70 truncate">{@card.tool}</span>
+      </div>
+
+      <%= if @card.state == "waiting" do %>
+        <.operation_preview
+          :if={is_map(@card.preview)}
+          id={@id <> "-preview"}
+          preview={@card.preview}
+          tool={@card.tool}
+          class="text-xs"
+        />
+        <details :if={@card.arguments} id={@id <> "-arguments"} class="text-xs">
+          <summary class="cursor-pointer opacity-70">{gettext("What the assistant sent")}</summary>
+          <pre class="mt-1 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded bg-base-200 p-2">{@card.arguments}</pre>
+        </details>
+        <p :if={@card.expires_at} class="text-xs opacity-70">
+          {gettext("Waits for you until %{time}.", time: site_moment(@card.expires_at))}
+        </p>
+      <% end %>
+
+      <p :if={@card[:note]} id={@id <> "-note"} role="alert" class="text-xs text-error">
+        {@card.note}
+      </p>
+
+      <div :if={@card.rejectable? or @card.repeatable?} class="flex justify-end gap-2">
+        <button
+          :if={@card.rejectable?}
+          id={@id <> "-reject"}
+          type="button"
+          phx-click="reject_card"
+          phx-value-uuid={@message.uuid}
+          disabled={@card[:busy?]}
+          class="btn btn-ghost btn-sm"
+        >
+          {gettext("Cancel the change")}
+        </button>
+        <button
+          :if={@card.state == "waiting"}
+          id={@id <> "-confirm"}
+          type="button"
+          phx-click="confirm_card"
+          phx-value-uuid={@message.uuid}
+          disabled={@card[:busy?]}
+          class="btn btn-primary btn-sm"
+        >
+          <span :if={@card[:busy?]} class="loading loading-spinner loading-xs"></span>
+          {gettext("Run")}
+        </button>
+        <button
+          :if={@card.repeatable?}
+          id={@id <> "-repeat"}
+          type="button"
+          phx-click="repeat_card"
+          phx-value-uuid={@message.uuid}
+          disabled={@card[:busy?]}
+          class="btn btn-outline btn-sm"
+        >
+          <.icon name="hero-arrow-path" class="w-4 h-4" /> {gettext("Ask again")}
+        </button>
+      </div>
+    </div>
     """
   end
 
@@ -122,7 +234,7 @@ defmodule PhoenixKitAgent.Web.Dock.Components do
   # Digits only, so it reads the same in every language.
   defp site_moment(datetime) do
     datetime
-    |> TimeZone.shift(Settings.get_setting("time_zone", "0"))
+    |> TimeZone.shift(Settings.get_setting_cached("time_zone", "0"))
     |> Calendar.strftime("%Y-%m-%d %H:%M")
   end
 
@@ -176,6 +288,14 @@ defmodule PhoenixKitAgent.Web.Dock.Components do
   defp outcome_icon("ok"), do: "hero-magnifying-glass"
   defp outcome_icon("denied"), do: "hero-no-symbol"
   defp outcome_icon(_other), do: "hero-exclamation-triangle"
+
+  defp card_icon("waiting"), do: "hero-pencil-square"
+  defp card_icon("confirmed"), do: "hero-check-circle"
+  defp card_icon(state) when state in ["rejected", "expired"], do: "hero-x-circle"
+  defp card_icon(_changed_failed_or_unavailable), do: "hero-exclamation-triangle"
+
+  defp settled_icon("confirmed"), do: "hero-check"
+  defp settled_icon(_other), do: "hero-information-circle"
 
   defp kind_icon("image"), do: "hero-photo"
   defp kind_icon("sheet"), do: "hero-table-cells"

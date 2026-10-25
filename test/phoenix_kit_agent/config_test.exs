@@ -136,7 +136,7 @@ defmodule PhoenixKitAgent.ConfigTest do
 
   describe "the default and the vision model" do
     test "are set to an AI endpoint that chats, and back to none" do
-      endpoint = endpoint_fixture()
+      endpoint = declared(%{model: "a/both"}, %{"tools" => "yes", "vision" => "yes"})
 
       assert {:ok, _} = Config.put_default_endpoint(endpoint.uuid, [])
       assert {:ok, _} = Config.put_vision_endpoint(endpoint.uuid, [])
@@ -161,6 +161,65 @@ defmodule PhoenixKitAgent.ConfigTest do
       assert Settings.get_setting("agent_default_endpoint_uuid", nil) in [nil, ""]
       assert Settings.get_setting("agent_vision_endpoint_uuid", nil) in [nil, ""]
     end
+  end
+
+  describe "the default and the vision model must fit their AI tasks" do
+    setup do
+      PhoenixKitAI.Guard.reset_caches()
+      on_exit(&PhoenixKitAI.Guard.reset_caches/0)
+      :ok
+    end
+
+    test "a default model known to take no tools is refused (agent.chat)" do
+      unfit = declared(%{model: "a/no-tools"}, %{"tools" => "no", "vision" => "yes"})
+
+      assert {:error, {:model_unfit, [:tools]}} = Config.put_default_endpoint(unfit.uuid, [])
+      assert Settings.get_setting("agent_default_endpoint_uuid", nil) in [nil, ""]
+    end
+
+    test "a vision model known not to take pictures is refused (agent.attachment)" do
+      unfit = declared(%{model: "a/no-vision"}, %{"tools" => "yes", "vision" => "no"})
+
+      assert {:error, {:model_unfit, [:vision]}} = Config.put_vision_endpoint(unfit.uuid, [])
+      assert Settings.get_setting("agent_vision_endpoint_uuid", nil) in [nil, ""]
+    end
+
+    test "a model nobody knows the abilities of is refused for both" do
+      unknown = endpoint_fixture(%{model: "a/never-heard-of"})
+
+      assert {:error, {:model_unverified, [:tools]}} =
+               Config.put_default_endpoint(unknown.uuid, [])
+
+      assert {:error, {:model_unverified, [:vision]}} =
+               Config.put_vision_endpoint(unknown.uuid, [])
+
+      assert Settings.get_setting("agent_default_endpoint_uuid", nil) in [nil, ""]
+      assert Settings.get_setting("agent_vision_endpoint_uuid", nil) in [nil, ""]
+    end
+
+    test "a fit model is saved, and none too" do
+      tools = declared(%{model: "a/tools"}, %{"tools" => "yes", "vision" => "no"})
+      vision = declared(%{model: "a/vision"}, %{"tools" => "no", "vision" => "yes"})
+
+      assert {:ok, _} = Config.put_default_endpoint(tools.uuid, [])
+      assert {:ok, _} = Config.put_vision_endpoint(vision.uuid, [])
+      assert Config.default_endpoint_uuid() == tools.uuid
+      assert Config.vision_endpoint_uuid() == vision.uuid
+
+      assert {:ok, _} = Config.put_default_endpoint(nil, [])
+      assert {:ok, _} = Config.put_vision_endpoint(nil, [])
+      assert Config.default_endpoint_uuid() == nil
+      assert Config.vision_endpoint_uuid() == nil
+    end
+  end
+
+  # An endpoint whose model's abilities an admin declared.
+  defp declared(attrs, flags) do
+    model = Map.fetch!(attrs, :model)
+
+    endpoint_fixture(
+      Map.put(attrs, :provider_settings, %{"capabilities" => Map.put(flags, "model", model)})
+    )
   end
 
   describe "the module prompt in the Activity log" do
@@ -282,6 +341,21 @@ defmodule PhoenixKitAgent.ConfigTest do
 
       assert {:error, changeset} = Config.save_defaults(params, [])
       assert %{daily_cost_limit_usd: [_]} = errors_on(changeset)
+    end
+  end
+
+  describe "cost_to_micro/1" do
+    test "a journal cost in dollars is whole micro-dollars, rounded half up" do
+      assert Config.cost_to_micro(Decimal.new("0.005")) == 5_000
+      assert Config.cost_to_micro(Decimal.new("0.0000004")) == 0
+      assert Config.cost_to_micro(Decimal.new("0.0000005")) == 1
+      assert Config.cost_to_micro(Decimal.new("0.0000025")) == 3
+      assert Config.cost_to_micro(Decimal.new("0.000000000000000001")) == 0
+      assert Config.cost_to_micro(Decimal.new(0)) == 0
+    end
+
+    test "no cost known stays nil" do
+      assert Config.cost_to_micro(nil) == nil
     end
   end
 end

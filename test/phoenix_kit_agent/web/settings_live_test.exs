@@ -8,11 +8,11 @@ defmodule PhoenixKitAgent.Web.SettingsLiveTest do
 
   import Ecto.Query, only: [from: 2]
 
-  alias PhoenixKit.Settings
+  alias PhoenixKit.{ModuleRegistry, Settings}
   alias PhoenixKit.Users.Auth.Scope
   alias PhoenixKit.Users.{Permissions, RoleAssignment, Roles}
   alias PhoenixKitAgent.Config
-  alias PhoenixKitAgent.Test.LogProbe
+  alias PhoenixKitAgent.Test.{LogProbe, Tools}
 
   @path "/en/admin/settings/agent"
   @stub __MODULE__
@@ -23,25 +23,20 @@ defmodule PhoenixKitAgent.Web.SettingsLiveTest do
     Application.put_env(:phoenix_kit_ai, :req_options, plug: {Req.Test, @stub}, retry: false)
     on_exit(fn -> Application.delete_env(:phoenix_kit_ai, :req_options) end)
 
-    # OpenRouter's listing: a model with tools that sees, one without either.
-    Req.Test.stub(@stub, fn conn ->
-      Req.Test.json(conn, %{
-        "data" => [
-          %{
-            "id" => "a/with-tools",
-            "supported_parameters" => ["tools"],
-            "architecture" => %{"input_modalities" => ["text", "image"]}
-          },
-          %{
-            "id" => "a/no-tools",
-            "supported_parameters" => ["temperature"],
-            "architecture" => %{"input_modalities" => ["text"]}
-          }
-        ]
-      })
-    end)
+    # What the models can do comes from the AI module's capabilities, never
+    # from a request of the page.
+    Req.Test.stub(@stub, fn _conn -> flunk("the page asked a provider") end)
 
     :ok
+  end
+
+  # An endpoint whose model's abilities an admin declared.
+  defp declared(attrs, flags) do
+    model = Map.fetch!(attrs, :model)
+
+    endpoint_fixture(
+      Map.put(attrs, :provider_settings, %{"capabilities" => Map.put(flags, "model", model)})
+    )
   end
 
   defp settings_entries(key) do
@@ -104,6 +99,22 @@ defmodule PhoenixKitAgent.Web.SettingsLiveTest do
 
       {:ok, view, _html} = live(conn, @path)
       refute has_element?(view, "#agent-settings-money-off")
+    end
+
+    test "a default Anthropic model: counted with a list price, marked without one", %{
+      conn: conn
+    } do
+      claude = endpoint_fixture(%{provider: "anthropic", model: "claude-sonnet-5-5"})
+      {:ok, _} = Settings.update_setting("agent_default_endpoint_uuid", claude.uuid)
+
+      {:ok, view, _html} = live(conn, @path)
+      refute has_element?(view, "#agent-settings-money-off")
+
+      unpriced = endpoint_fixture(%{provider: "anthropic", model: "claude-unknown-9"})
+      {:ok, _} = Settings.update_setting("agent_default_endpoint_uuid", unpriced.uuid)
+
+      {:ok, view, _html} = live(conn, @path)
+      assert has_element?(view, "#agent-settings-money-off", "only the turn limit")
     end
 
     test "saves the defaults, with who saved them in the settings history", %{
@@ -191,8 +202,10 @@ defmodule PhoenixKitAgent.Web.SettingsLiveTest do
       %{
         conn: log_in(conn, manager),
         manager: manager,
-        sees: endpoint_fixture(%{name: "Sees", model: "a/with-tools"}),
-        plain: endpoint_fixture(%{name: "Plain", model: "a/no-tools"}),
+        sees:
+          declared(%{name: "Sees", model: "a/with-tools"}, %{"tools" => "yes", "vision" => "yes"}),
+        plain:
+          declared(%{name: "Plain", model: "a/no-tools"}, %{"tools" => "no", "vision" => "no"}),
         direct: endpoint_fixture(%{name: "Direct", provider: "deepseek", model: "deepseek-chat"})
       }
     end
@@ -225,12 +238,12 @@ defmodule PhoenixKitAgent.Web.SettingsLiveTest do
 
       view
       |> form("#agent-models-form",
-        models: %{default_endpoint_uuid: ctx.plain.uuid, vision_endpoint_uuid: ctx.sees.uuid}
+        models: %{default_endpoint_uuid: ctx.sees.uuid, vision_endpoint_uuid: ctx.sees.uuid}
       )
       |> render_submit()
 
       assert has_element?(view, "#flash-info")
-      assert Config.default_endpoint_uuid() == ctx.plain.uuid
+      assert Config.default_endpoint_uuid() == ctx.sees.uuid
       assert Config.vision_endpoint_uuid() == ctx.sees.uuid
       assert [entry] = settings_entries("agent_default_endpoint_uuid")
       assert entry.actor_uuid == ctx.manager.uuid
@@ -264,12 +277,61 @@ defmodule PhoenixKitAgent.Web.SettingsLiveTest do
       assert settings_entries("agent_vision_endpoint_uuid") == []
     end
 
+    test "a new model that does not fit its AI task is refused, with what it lacks", ctx do
+      {:ok, view, _html} = live(ctx.conn, @path)
+
+      view
+      |> form("#agent-models-form",
+        models: %{default_endpoint_uuid: ctx.plain.uuid, vision_endpoint_uuid: ctx.plain.uuid}
+      )
+      |> render_submit()
+
+      assert has_element?(view, "#flash-error")
+      assert render(view) =~ "does not take tools"
+      assert render(view) =~ "does not take pictures"
+
+      view
+      |> form("#agent-models-form",
+        models: %{default_endpoint_uuid: ctx.direct.uuid, vision_endpoint_uuid: ctx.direct.uuid}
+      )
+      |> render_submit()
+
+      assert render(view) =~ "nobody knows whether its model takes tools"
+      assert render(view) =~ "nobody knows whether its model takes pictures"
+
+      assert Config.default_endpoint_uuid() == nil
+      assert Config.vision_endpoint_uuid() == nil
+      assert settings_entries("agent_default_endpoint_uuid") == []
+      assert settings_entries("agent_vision_endpoint_uuid") == []
+    end
+
+    test "a model kept as it is is not checked again", ctx do
+      # Saved before anyone knew what its model can do: the writer would refuse it now.
+      {:ok, _} = Settings.update_setting("agent_default_endpoint_uuid", ctx.direct.uuid)
+      {:ok, view, _html} = live(ctx.conn, @path)
+
+      view
+      |> form("#agent-models-form",
+        models: %{default_endpoint_uuid: ctx.direct.uuid, vision_endpoint_uuid: ctx.sees.uuid}
+      )
+      |> render_submit()
+
+      assert has_element?(view, "#flash-info")
+      assert Config.default_endpoint_uuid() == ctx.direct.uuid
+      assert Config.vision_endpoint_uuid() == ctx.sees.uuid
+    end
+
     test "the model chosen is what the money-off note is about", ctx do
+      direct =
+        declared(%{name: "Tools", provider: "deepseek", model: "deepseek-tools"}, %{
+          "tools" => "yes"
+        })
+
       {:ok, view, _html} = live(ctx.conn, @path)
       refute has_element?(view, "#agent-settings-money-off")
 
       view
-      |> form("#agent-models-form", models: %{default_endpoint_uuid: ctx.direct.uuid})
+      |> form("#agent-models-form", models: %{default_endpoint_uuid: direct.uuid})
       |> render_submit()
 
       assert has_element?(view, "#agent-settings-money-off")
@@ -518,6 +580,72 @@ defmodule PhoenixKitAgent.Web.SettingsLiveTest do
     end
   end
 
+  describe "what the assistant can use now" do
+    setup do
+      :ok = ModuleRegistry.register(Tools)
+      on_exit(fn -> ModuleRegistry.unregister(Tools) end)
+      :ok
+    end
+
+    defp tool_row(name), do: "#agent-tools [data-tool='#{name}']"
+
+    defp tool_status(view, name, status),
+      do: has_element?(view, tool_row(name) <> "[data-status='#{status}']")
+
+    defp tool_reason(view, name, reason),
+      do: has_element?(view, tool_row(name) <> " [data-reason='#{reason}']")
+
+    test "the module's tools for the session's role: available, or closed and why", %{
+      conn: conn
+    } do
+      manager = user_with(["agent", "agent.manage", "dashboard"], "manager")
+      {:ok, view, _html} = live(log_in(conn, manager), @path)
+
+      assert has_element?(view, "#agent-tools-note", "for your session's role")
+      assert has_element?(view, "#agent-tools-module-agent_test_tools", "Agent test tools")
+
+      assert tool_status(view, "agenttest.list_items", "available")
+      refute has_element?(view, tool_row("agenttest.list_items") <> " [data-reason]")
+
+      # A write of a module without "Agent may act"; its permission is held.
+      assert tool_status(view, "agenttest.write_item", "closed")
+      assert tool_reason(view, "agenttest.write_item", "agent_writes_off")
+      refute tool_reason(view, "agenttest.write_item", "no_permission")
+      assert has_element?(view, tool_row("agenttest.write_item"), "Agent may act")
+
+      # A read whose permission the role does not grant.
+      assert tool_status(view, "agenttest.secret_items", "closed")
+      assert tool_reason(view, "agenttest.secret_items", "no_permission")
+      assert has_element?(view, tool_row("agenttest.secret_items"), "users")
+    end
+
+    test "a module marked \"Agent may act\": its write is available", %{conn: conn} do
+      {:ok, _} = Settings.update_setting("api_session_write_modules", "agent_test_tools")
+      manager = user_with(["agent", "agent.manage", "dashboard"], "manager")
+      {:ok, view, _html} = live(log_in(conn, manager), @path)
+
+      assert tool_status(view, "agenttest.write_item", "available")
+    end
+
+    test "the role the session acts as narrows it", %{conn: conn} do
+      {:ok, _} = Settings.update_setting("role_switcher_enabled", "true")
+      manager = user_with(["agent", "agent.manage", "dashboard"], "manager")
+      {:ok, plain} = Roles.create_role(%{name: "AgentPlain#{System.unique_integer([:positive])}"})
+
+      for key <- ["agent", "agent.manage"],
+          do: {:ok, _} = Permissions.grant_permission(plain.uuid, key)
+
+      {:ok, _} = Roles.assign_role(manager, plain.name)
+
+      {conn, token} = log_in_session(conn, manager)
+      act_as(token, plain)
+      {:ok, view, _html} = live(conn, @path)
+
+      assert tool_status(view, "agenttest.list_items", "closed")
+      assert tool_reason(view, "agenttest.list_items", "no_permission")
+    end
+  end
+
   describe "without agent.manage" do
     test "the page does not open for a user who only uses the assistant", %{conn: conn} do
       conn = log_in(conn, user_with(["agent"], "user"))
@@ -573,7 +701,7 @@ defmodule PhoenixKitAgent.Web.SettingsLiveTest do
       conn: conn
     } do
       manager = user_with(["agent", "agent.manage"], "manager")
-      endpoint = endpoint_fixture(%{model: "a/with-tools"})
+      endpoint = declared(%{model: "a/with-tools"}, %{"tools" => "yes", "vision" => "yes"})
       {:ok, view, _html} = live(log_in(conn, manager), @path)
 
       [role] =

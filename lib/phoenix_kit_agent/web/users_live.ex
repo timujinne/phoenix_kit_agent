@@ -16,20 +16,36 @@ defmodule PhoenixKitAgent.Web.UsersLive do
   and only the fields the form offers are taken from it, so a forged submit
   cannot reach the lock columns, the user's own instructions or the notice
   list. A model that the form did not offer (one that cannot chat, or does not
-  exist) is refused. A save after someone else changed the same user's
+  exist) is refused, and so is a newly chosen one that does not fit the
+  `agent.chat` AI task (`PhoenixKitAI.Tasks.check_selection/2`): known not
+  to take tools, or not known to. A save after someone else changed the same user's
   settings since the form opened is refused (`expected:` of
   `UserConfig.admin_update/4`), not written over their change.
 
   A user whose model does not report what a call costs
-  (`PhoenixKitAgent.Models.reports_cost?/1`) is marked: money is not counted
+  (`PhoenixKitAgent.Models.reports_cost?/2`) is marked: money is not counted
   for them and only the turn limit applies — in the list, and in the form for
   the model chosen there.
+
+  Under the open form, what the user's assistant can use now
+  (`PhoenixKitAgent.Web.ToolAvailability`): the modules' read and write tools
+  by every role the user holds, which the role of a session can narrow; read
+  when the form opens.
 
   Who changed what for whom goes to the core Activity log, field names only.
   The model list marks the endpoints whose model is known not to take tools, and
   those where that is unknown (`PhoenixKitAgent.Models`); that listing is
   fetched off the page process after the form opens. The page keeps endpoints
   as `PhoenixKitAgent.Models.summary/1` — never the endpoint row with its key.
+
+  A user blocked from the AI guard's `free_text` group (the assistant and
+  the AI Playground, `PhoenixKitAI.GuardBlocks`) is marked, with the
+  block's reason only for a viewer who may see it (`GuardBlocks.active/3`
+  with the session's scope: `ai.manage` or an Owner). "Lift" calls
+  `PhoenixKitAI.Guard.unblock/3` with that scope for the block the server
+  finds for the row's user, after `agent.manage` is checked again; the
+  guard refuses one's own block and an Owner's (unless the viewer is an
+  Owner), and the button is shown only where it would not refuse.
   """
 
   # `log: false`: LiveView would log every event with its parameters —
@@ -43,11 +59,14 @@ defmodule PhoenixKitAgent.Web.UsersLive do
   import PhoenixKitWeb.Components.Core.Input, only: [translate_error: 1]
   import PhoenixKitWeb.Components.Core.Select, only: [select: 1]
   import PhoenixKitWeb.Components.Core.Textarea, only: [textarea: 1]
+  import PhoenixKitAgent.Web.ToolAvailability, only: [assistant_tools: 1]
 
+  alias PhoenixKit.Users.Auth.Scope
   alias PhoenixKit.Users.Roles
   alias PhoenixKit.Utils.{Number, Routes}
   alias PhoenixKitAgent.{Config, Models, Spend, UserConfig}
-  alias PhoenixKitAgent.Web.Access
+  alias PhoenixKitAgent.Web.{Access, ToolAvailability}
+  alias PhoenixKitAI.GuardBlocks
 
   # The fields of the form, as they are named in its submit, and the fields of
   # `UserSettings.admin_changeset/2` they are for. Money is typed in dollars and
@@ -115,6 +134,12 @@ defmodule PhoenixKitAgent.Web.UsersLive do
 
   def handle_event("cancel", _params, socket), do: {:noreply, assign(socket, editing: nil)}
 
+  def handle_event("lift_block", %{"user" => user_uuid}, socket) when is_binary(user_uuid) do
+    if Access.may_manage?(socket),
+      do: {:noreply, lift_block(socket, user_uuid)},
+      else: {:noreply, denied(socket)}
+  end
+
   def handle_event("validate_user", %{"user_settings" => params}, socket)
       when is_map(params) do
     {:noreply, update_editing(socket, &%{&1 | params: Map.merge(&1.params, text_params(params))})}
@@ -129,7 +154,7 @@ defmodule PhoenixKitAgent.Web.UsersLive do
 
   # A crafted event without the form's fields.
   def handle_event(event, _params, socket)
-      when event in ["configure", "validate_user", "save_user"],
+      when event in ["configure", "validate_user", "save_user", "lift_block"],
       do: {:noreply, socket}
 
   @impl true
@@ -158,6 +183,7 @@ defmodule PhoenixKitAgent.Web.UsersLive do
 
     endpoints = Models.summaries(endpoints)
     owners = "Owner" |> Roles.users_with_role() |> MapSet.new(& &1.uuid)
+    viewer = Access.session_scope(socket)
 
     rows =
       Enum.map(users, fn user ->
@@ -171,11 +197,45 @@ defmodule PhoenixKitAgent.Web.UsersLive do
           spend: Map.fetch!(spend, user.uuid),
           endpoint: endpoint,
           money_off?: endpoint != nil and not Models.reports_cost?(endpoint),
-          own_endpoint?: :endpoint_uuid in settings.own
+          own_endpoint?: :endpoint_uuid in settings.own,
+          block: block_of(user.uuid, viewer)
         }
       end)
 
     assign(socket, rows: rows, owner?: Access.owner?(socket))
+  end
+
+  # The user's active block of the assistant's group as the viewer may see
+  # it, and whether the viewer may lift it.
+  defp block_of(user_uuid, viewer) do
+    case GuardBlocks.active("agent.chat", user_uuid, viewer) do
+      nil -> nil
+      block -> %{reason: block.reason, liftable?: GuardBlocks.may_lift?(viewer, block)}
+    end
+  end
+
+  # ── a block ───────────────────────────────────────────────────────────
+
+  # The block is the one the server finds for the user now, never one the
+  # browser names.
+  defp lift_block(socket, user_uuid) do
+    with {:ok, user_uuid} <- Ecto.UUID.cast(user_uuid),
+         %{} = block <- GuardBlocks.active("agent.chat", user_uuid),
+         {:ok, _lifted} <- PhoenixKitAI.Guard.unblock(Access.session_scope(socket), block, nil) do
+      socket |> load_rows() |> put_flash(:info, gettext("The block is lifted."))
+    else
+      {:error, :own_block} ->
+        put_flash(socket, :error, gettext("Nobody but an Owner lifts their own block."))
+
+      {:error, :owner_only} ->
+        put_flash(socket, :error, gettext("Only an Owner can lift an Owner's block."))
+
+      {:error, :forbidden} ->
+        denied(socket)
+
+      _gone ->
+        socket |> load_rows() |> put_flash(:error, gettext("This user is not blocked now."))
+    end
   end
 
   # ── the form ──────────────────────────────────────────────────────────
@@ -204,12 +264,18 @@ defmodule PhoenixKitAgent.Web.UsersLive do
             endpoints: endpoints,
             tools: %{},
             tools_loading?: endpoints != [],
-            default_endpoint: default_endpoint()
+            default_endpoint: default_endpoint(),
+            assistant_tools: tools_by_roles(listed.user)
           }
         )
         |> start_tools(listed.user.uuid, Enum.map(endpoints, & &1.uuid))
     end
   end
+
+  # What the user's assistant can use by every role they hold: a session acting
+  # as one of them sees no more than that.
+  defp tools_by_roles(user),
+    do: user |> Scope.for_user(narrow: false) |> ToolAvailability.for_scope()
 
   defp listed(socket, user_uuid), do: Enum.find(socket.assigns.rows, &(&1.user.uuid == user_uuid))
 
@@ -302,6 +368,10 @@ defmodule PhoenixKitAgent.Web.UsersLive do
 
       {:error, %Ecto.Changeset{} = changeset} ->
         show_errors(socket, editing, submitted, changeset_errors(changeset))
+
+      # The model stopped fitting between the form's check and the save.
+      {:error, {reason, _needs} = refusal} when reason in [:model_unfit, :model_unverified] ->
+        show_errors(socket, editing, submitted, %{endpoint_uuid: [unfit_text(refusal)]})
 
       {:error, :forbidden} ->
         if Access.may_manage?(socket), do: owner_only(socket), else: denied(socket)
@@ -399,11 +469,41 @@ defmodule PhoenixKitAgent.Web.UsersLive do
         {Map.put(attrs, :endpoint_uuid, nil), errors}
 
       uuid ->
-        if Enum.any?(editing.endpoints, &(&1.uuid == uuid)),
-          do: {Map.put(attrs, :endpoint_uuid, uuid), errors},
-          else: {attrs, Map.put(errors, :endpoint_uuid, [gettext("is not available")])}
+        case chosen_endpoint(uuid, editing) do
+          :ok -> {Map.put(attrs, :endpoint_uuid, uuid), errors}
+          {:error, message} -> {attrs, Map.put(errors, :endpoint_uuid, [message])}
+        end
     end
   end
+
+  # One the form offered, and — when it is a new choice — one that fits the
+  # assistant's AI task.
+  defp chosen_endpoint(uuid, editing) do
+    cond do
+      not Enum.any?(editing.endpoints, &(&1.uuid == uuid)) ->
+        {:error, gettext("is not available")}
+
+      uuid == editing.shown.endpoint_uuid ->
+        :ok
+
+      true ->
+        case PhoenixKitAI.Tasks.check_selection("agent.chat", uuid) do
+          :ok -> :ok
+          {:error, refusal} -> {:error, unfit_text(refusal)}
+        end
+    end
+  end
+
+  defp unfit_text({:model_unfit, _missing}),
+    do: gettext("cannot be used: its model does not take tools, which the assistant needs")
+
+  defp unfit_text({:model_unverified, _unclear}),
+    do:
+      gettext(
+        "cannot be used yet: nobody knows whether its model takes tools. Mark what it can do on its AI endpoint first"
+      )
+
+  defp unfit_text(_gone), do: gettext("is not available")
 
   defp blank_to_nil(value) do
     if String.trim(value) == "", do: nil, else: value
@@ -572,6 +672,13 @@ defmodule PhoenixKitAgent.Web.UsersLive do
         </.form>
       </section>
 
+      <.assistant_tools
+        :if={@editing}
+        id="agent-user-tools"
+        modules={@editing.assistant_tools}
+        subject={:user}
+      />
+
       <section class="card bg-base-100 shadow-sm">
         <div class="overflow-x-auto">
           <table id="agent-users" class="table">
@@ -600,6 +707,16 @@ defmodule PhoenixKitAgent.Web.UsersLive do
                   >
                     {if row.settings.enabled?, do: gettext("Active"), else: gettext("Switched off")}
                   </span>
+                  <div :if={row.block} id={"agent-user-#{row.user.uuid}-blocked"} class="mt-1">
+                    <span class="badge badge-sm badge-warning">{gettext("Blocked")}</span>
+                    <div
+                      :if={row.block.reason}
+                      id={"agent-user-#{row.user.uuid}-block-reason"}
+                      class="text-xs text-base-content/70"
+                    >
+                      {row.block.reason}
+                    </div>
+                  </div>
                 </td>
                 <td id={"agent-user-#{row.user.uuid}-model"}>
                   <%= if row.endpoint do %>
@@ -643,6 +760,17 @@ defmodule PhoenixKitAgent.Web.UsersLive do
                   {if row.settings.notify_on_limit, do: gettext("Yes"), else: gettext("No")}
                 </td>
                 <td class="text-right">
+                  <.button
+                    :if={row.block && row.block.liftable?}
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    id={"agent-user-lift-#{row.user.uuid}"}
+                    phx-click="lift_block"
+                    phx-value-user={row.user.uuid}
+                  >
+                    {gettext("Lift the block")}
+                  </.button>
                   <.button
                     :if={@owner? or not row.owner?}
                     type="button"

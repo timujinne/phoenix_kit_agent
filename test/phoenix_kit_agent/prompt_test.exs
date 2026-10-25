@@ -86,6 +86,25 @@ defmodule PhoenixKitAgent.PromptTest do
       assert prompt =~ "never override"
     end
 
+    test "the module's rule for writes: a proposal that waits, never said to be done", %{
+      user: user
+    } do
+      {:ok, _} = Config.put_system_prompt("MODULE-PROMPT", [])
+      Application.put_env(:phoenix_kit_agent, :prompt_addendum, {Addenda, :plain})
+      prompt = build(user)
+
+      rule = position(prompt, "waits for the user to confirm")
+      assert position(prompt, "MODULE-PROMPT") < rule
+      assert rule < position(prompt, "HOST-ADDENDUM-PLAIN")
+      assert prompt =~ "never say that it is done"
+      assert prompt =~ "[confirmation] waiting: …"
+      assert prompt =~ "do not ask for it again"
+
+      # Without a module prompt of the site it is still there.
+      {:ok, _} = Config.put_system_prompt(nil, [])
+      assert build(user) =~ "waits for the user to confirm"
+    end
+
     test "sections that are not set are left out, the context is always there", %{user: user} do
       prompt = build(user)
 
@@ -175,8 +194,8 @@ defmodule PhoenixKitAgent.PromptTest do
     test "a long page is cut", %{user: user} do
       prompt = build(user, %{page: "/" <> String.duplicate("a", 500)})
 
-      assert prompt =~ "Page: /aaa"
-      assert prompt |> String.split("\n") |> Enum.all?(&(String.length(&1) < 300))
+      assert [page] = prompt |> String.split("\n") |> Enum.filter(&(&1 =~ "Page: /aaa"))
+      assert String.length(page) < 300
     end
   end
 

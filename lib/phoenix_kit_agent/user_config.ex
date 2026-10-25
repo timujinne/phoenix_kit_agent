@@ -94,6 +94,24 @@ defmodule PhoenixKitAgent.UserConfig do
     end)
   end
 
+  @doc """
+  The endpoints the assistant's turns use now: the module default and
+  every user's own model. It backs the `endpoints` of the `agent.chat` AI
+  task (`PhoenixKitAgent.ai_tasks/0`).
+  """
+  @spec endpoint_uuids() :: [String.t()]
+  def endpoint_uuids do
+    own =
+      from(s in UserSettings,
+        where: not is_nil(s.endpoint_uuid),
+        distinct: true,
+        select: s.endpoint_uuid
+      )
+      |> repo().all()
+
+    Enum.uniq(List.wrap(Config.default_endpoint_uuid()) ++ own)
+  end
+
   defp build_effective(user_uuid, row, defaults, default_endpoint) do
     limits =
       Map.new(UserSettings.limit_fields(), fn field ->
@@ -255,11 +273,20 @@ defmodule PhoenixKitAgent.UserConfig do
   notification for the user. `{:error, :forbidden}` without the permission
   (or for an Owner's settings, to a non-Owner), `{:error, :not_found}` for an
   unknown user, `{:error, changeset}` for an invalid value (nothing is
-  written).
+  written). A newly chosen model must fit the `agent.chat` AI task
+  (`PhoenixKitAI.Tasks.check_selection/2`): one known not to take tools is
+  `{:error, {:model_unfit, missing}}`, one nobody knows takes them `{:error,
+  {:model_unverified, unclear}}`, and nothing is written; none (the module
+  default) and the model already saved are not checked.
   """
   @spec admin_update(Scope.t() | nil, term(), map(), keyword()) ::
           {:ok, UserSettings.t(), [atom()]}
-          | {:error, :forbidden | :not_found | :stale | Ecto.Changeset.t()}
+          | {:error,
+             :forbidden
+             | :not_found
+             | :stale
+             | {:model_unfit | :model_unverified, [atom()]}
+             | Ecto.Changeset.t()}
   def admin_update(actor_scope, target_user_uuid, attrs, opts \\ []) when is_map(attrs) do
     with :ok <- authorize_manage(actor_scope),
          {:ok, target} <- existing_user(target_user_uuid),
@@ -328,6 +355,8 @@ defmodule PhoenixKitAgent.UserConfig do
         changeset = UserSettings.admin_changeset(row, attrs)
         fields = changeset.changes |> Map.keys() |> Enum.sort()
 
+        with {:error, refusal} <- check_model(changeset), do: repo().rollback(refusal)
+
         changeset =
           if fields == [],
             do: changeset,
@@ -344,6 +373,21 @@ defmodule PhoenixKitAgent.UserConfig do
       {:ok, {row, fields}} -> {:ok, row, fields}
       {:error, %Ecto.Changeset{}} = error -> error
       {:error, :stale} = error -> error
+      {:error, {:model_unfit, _missing}} = error -> error
+      {:error, {:model_unverified, _unclear}} = error -> error
+    end
+  end
+
+  # A newly chosen model must fit the `agent.chat` AI task. None (the module
+  # default) and the model already saved are not checked; an endpoint that
+  # does not exist is the changeset's foreign key error.
+  defp check_model(changeset) do
+    with uuid when is_binary(uuid) <- Ecto.Changeset.get_change(changeset, :endpoint_uuid),
+         {:error, {reason, _needs}} = refusal when reason in [:model_unfit, :model_unverified] <-
+           PhoenixKitAI.Tasks.check_selection("agent.chat", uuid) do
+      refusal
+    else
+      _fit_none_or_kept -> :ok
     end
   end
 

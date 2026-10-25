@@ -31,13 +31,15 @@ defmodule PhoenixKitAgent.Attachments.Processor do
       (`ai_disabled` otherwise), the session that added the file must still
       be one that may use the assistant (`session_gone` or `forbidden`), and
       the user must be within their limits (`limit_reached`) — the money
-      limits as they apply to the **vision** endpoint
-      (`PhoenixKitAgent.Limits.money_counted?/1`): one that reports no cost is
-      held by the turn limit only. One user's descriptions are made one at a
-      time (a `:global` lock per user, on every connected node), so each is
-      checked against a journal that holds what the one before cost. The call
-      carries the user and `source: "agent"` — the spending limits count it
-      — and its content is never written to the AI journal.
+      limits as they apply to a description on the **vision** endpoint
+      (`PhoenixKitAgent.Limits.money_counted?/2` with `:vision`: priced like
+      a chat call — the provider's cost, a catalogue, a manual or a list
+      price): one that nothing prices is held by the turn limit only. One
+      user's descriptions are made one at a time (a `:global` lock per user,
+      on every connected node), so each is checked against a journal that
+      holds what the one before cost. The call carries the user and
+      `source: "agent"` — the spending limits count it — and its content is
+      never written to the AI journal.
 
   ## Failing safely
 
@@ -48,7 +50,9 @@ defmodule PhoenixKitAgent.Attachments.Processor do
   `ai_disabled`, `session_gone`, `forbidden`, `limit_reached`,
   `budget_exceeded`, `model_error`, `timeout`, `crashed`,
   `unavailable` (no place within `queue_wait_ms`, see `Attachments.Slots`, or no
-  scratch space).
+  scratch space), and the refusals of the AI guard for the `agent.attachment`
+  task: `task_blocked`, `task_limit_exceeded`, `model_unfit`,
+  `model_unverified`, `no_provider_for_params`.
 
   The work is two processes: a *job* under `TaskSupervisor`, which waits for
   a place (at most `concurrent_jobs` jobs hold one, `jobs_per_user` of them
@@ -72,6 +76,11 @@ defmodule PhoenixKitAgent.Attachments.Processor do
 
   @task_supervisor PhoenixKitAgent.Attachments.TaskSupervisor
   @worker_supervisor PhoenixKitAgent.Attachments.WorkerSupervisor
+
+  # The refusals of the AI guard a description keeps as its own code
+  # (`{reason, …}` is the code `reason`), never as `model_error`.
+  @guard_refusals ~w(task_blocked task_limit_exceeded model_unfit model_unverified
+                     no_provider_for_params)a
 
   @describe_picture "Describe this picture for someone who cannot see it. Transcribe every " <>
                       "piece of text, number and table in it exactly, then say what else it shows."
@@ -286,7 +295,7 @@ defmodule PhoenixKitAgent.Attachments.Processor do
 
   # The money limits as they apply to the endpoint the call is paid on.
   defp within_limits(settings, vision) do
-    case SpendLimits.check(settings, vision) do
+    case SpendLimits.check(settings, vision, use: :vision) do
       :ok -> :ok
       {:error, {:limit_reached, _status}} -> {:error, :limit_reached}
     end
@@ -298,6 +307,7 @@ defmodule PhoenixKitAgent.Attachments.Processor do
         prompt: prompt,
         user_uuid: settings.user_uuid,
         source: "agent",
+        task: "agent.attachment",
         capture_request_content: false,
         # Never answered from, nor put into, a cache the other users share.
         cache: false
@@ -311,6 +321,9 @@ defmodule PhoenixKitAgent.Attachments.Processor do
 
       {:error, {:budget_exceeded, _scope}} ->
         {:error, :budget_exceeded}
+
+      {:error, reason} when is_tuple(reason) and elem(reason, 0) in @guard_refusals ->
+        {:error, elem(reason, 0)}
 
       _failed ->
         {:error, :model_error}

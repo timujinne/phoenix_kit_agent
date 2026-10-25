@@ -21,11 +21,30 @@ defmodule PhoenixKitAgent.Migrations do
     * `phoenix_kit_agent_limit_events` — one limit notice per user, kind and
       period.
 
+  ## V2 — the confirmation of a write (spec §5.2, I6)
+
+    * `phoenix_kit_agent_messages.tool_outcome` also takes `expired`,
+      `changed` and `failed` (the outcomes of a confirmation card, kept on its
+      `notice`);
+    * `assistant_message_uuid` — on a `tool` message, the `assistant` message
+      whose tool call it answers (the arguments a confirmation is redeemed
+      with). No foreign key: both rows are in the same chat and go with it;
+    * `confirmation_uuid` — the confirmation core holds the write in
+      (`PhoenixKit.API.Confirm`), on the `tool` message that asks for it and
+      on the `notice` that says how it ended; partial index
+      `phoenix_kit_agent_messages_confirmation_uuid_index`, through which the
+      chat panel finds the cards still waiting. No foreign key: core deletes
+      its rows on its own schedule.
+
+  `down/1` to V1 drops the two columns and the index, and clears an outcome
+  V1 cannot hold (the notice stays, without it).
+
   Deleting a user deletes their rows of every table (`ON DELETE CASCADE`); a
   deleted `phoenix_kit_ai_requests` row, AI endpoint or Storage file leaves the
   link `NULL` and never blocks the delete. Money is in micro-dollars
-  (`*_micro_usd`, `$1 = 1_000_000`), the unit of
-  `phoenix_kit_ai_requests.cost_cents`.
+  (`*_micro_usd`, `$1 = 1_000_000`); the AI journal keeps dollars
+  (`phoenix_kit_ai_requests.cost`), turned into micro-dollars by
+  `PhoenixKitAgent.Config.cost_to_micro/1`.
 
   ## Version marker
 
@@ -52,10 +71,14 @@ defmodule PhoenixKitAgent.Migrations do
 
   alias PhoenixKit.Migrations.Postgres.Helpers
 
-  @current_version 1
+  @current_version 2
   @default_prefix "public"
   @marker_prefix "pk_agent_schema:"
   @version_table "phoenix_kit_agent_conversations"
+
+  # The values of `phoenix_kit_agent_messages.tool_outcome`, by version.
+  @v1_outcomes ~w(ok error denied needs_confirmation confirmed rejected)
+  @v2_outcomes @v1_outcomes ++ ~w(expired changed failed)
 
   # Children first: the order `down_statements/2` drops them in.
   @tables ~w(
@@ -140,7 +163,9 @@ defmodule PhoenixKitAgent.Migrations do
 
   @doc """
   The SQL `up/1` runs, as data. `target` is how far to go (default
-  `current_version/0`); `0` is nothing.
+  `current_version/0`); `0` is nothing. Every version from V1 on is in it:
+  each statement guards itself, so the versions already applied change
+  nothing.
   """
   @spec up_statements(String.t(), non_neg_integer()) :: [String.t()]
   def up_statements(prefix \\ @default_prefix, target \\ @current_version)
@@ -152,13 +177,14 @@ defmodule PhoenixKitAgent.Migrations do
     if target == 0 do
       []
     else
-      v1_statements(prefix) ++ [marker_statement(prefix, target)]
+      Enum.flat_map(1..target, &version_up(&1, prefix)) ++ [marker_statement(prefix, target)]
     end
   end
 
   @doc """
   The SQL `down/1` runs, as data. To `0` it drops every table of the module;
-  to a version still in the chain it only re-stamps the marker.
+  to a version still in the chain it undoes every later version (each
+  statement guards itself) and re-stamps the marker.
   """
   @spec down_statements(String.t(), non_neg_integer()) :: [String.t()]
   def down_statements(prefix \\ @default_prefix, target \\ 0)
@@ -170,9 +196,15 @@ defmodule PhoenixKitAgent.Migrations do
     if target == 0 do
       Enum.map(@tables, &"DROP TABLE IF EXISTS #{Helpers.qualify_table(&1, prefix)}")
     else
-      [marker_statement(prefix, target)]
+      later = if target < @current_version, do: @current_version..(target + 1)//-1, else: []
+      Enum.flat_map(later, &version_down(&1, prefix)) ++ [marker_statement(prefix, target)]
     end
   end
+
+  defp version_up(1, prefix), do: v1_statements(prefix)
+  defp version_up(2, prefix), do: v2_statements(prefix)
+
+  defp version_down(2, prefix), do: v2_down_statements(prefix)
 
   # ── V1 ────────────────────────────────────────────────────────────────
 
@@ -241,7 +273,7 @@ defmodule PhoenixKitAgent.Migrations do
         CONSTRAINT phoenix_kit_agent_messages_role_check
           CHECK (role IN ('user', 'assistant', 'tool', 'notice')),
         CONSTRAINT phoenix_kit_agent_messages_tool_outcome_check
-          CHECK (tool_outcome IS NULL OR tool_outcome IN ('ok', 'error', 'denied', 'needs_confirmation', 'confirmed', 'rejected'))
+          CHECK (#{outcome_check(@v1_outcomes)})
       )
       """,
       "CREATE INDEX IF NOT EXISTS phoenix_kit_agent_messages_conversation_index ON #{msgs} (conversation_uuid, inserted_at)",
@@ -341,6 +373,40 @@ defmodule PhoenixKitAgent.Migrations do
       """,
       "CREATE UNIQUE INDEX IF NOT EXISTS phoenix_kit_agent_limit_events_user_kind_period_index ON #{events} (user_uuid, limit_kind, period_key)"
     ]
+  end
+
+  # ── V2 ────────────────────────────────────────────────────────────────
+
+  defp v2_statements(prefix) do
+    msgs = Helpers.qualify_table("phoenix_kit_agent_messages", prefix)
+
+    [
+      "ALTER TABLE #{msgs} ADD COLUMN IF NOT EXISTS assistant_message_uuid uuid",
+      "ALTER TABLE #{msgs} ADD COLUMN IF NOT EXISTS confirmation_uuid uuid",
+      "ALTER TABLE #{msgs} DROP CONSTRAINT IF EXISTS phoenix_kit_agent_messages_tool_outcome_check",
+      "ALTER TABLE #{msgs} ADD CONSTRAINT phoenix_kit_agent_messages_tool_outcome_check CHECK (#{outcome_check(@v2_outcomes)})",
+      "CREATE INDEX IF NOT EXISTS phoenix_kit_agent_messages_confirmation_uuid_index ON #{msgs} (confirmation_uuid) WHERE confirmation_uuid IS NOT NULL"
+    ]
+  end
+
+  defp v2_down_statements(prefix) do
+    msgs = Helpers.qualify_table("phoenix_kit_agent_messages", prefix)
+    index = Helpers.qualify_table("phoenix_kit_agent_messages_confirmation_uuid_index", prefix)
+    added = Enum.map_join(@v2_outcomes -- @v1_outcomes, ", ", &"'#{&1}'")
+
+    [
+      "DROP INDEX IF EXISTS #{index}",
+      "ALTER TABLE #{msgs} DROP CONSTRAINT IF EXISTS phoenix_kit_agent_messages_tool_outcome_check",
+      "UPDATE #{msgs} SET tool_outcome = NULL WHERE tool_outcome IN (#{added})",
+      "ALTER TABLE #{msgs} ADD CONSTRAINT phoenix_kit_agent_messages_tool_outcome_check CHECK (#{outcome_check(@v1_outcomes)})",
+      "ALTER TABLE #{msgs} DROP COLUMN IF EXISTS confirmation_uuid",
+      "ALTER TABLE #{msgs} DROP COLUMN IF EXISTS assistant_message_uuid"
+    ]
+  end
+
+  defp outcome_check(outcomes) do
+    "tool_outcome IS NULL OR tool_outcome IN (" <>
+      Enum.map_join(outcomes, ", ", &"'#{&1}'") <> ")"
   end
 
   defp marker_statement(prefix, version) do

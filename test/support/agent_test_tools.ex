@@ -14,9 +14,19 @@ defmodule PhoenixKitAgent.Test.Tools do
   `Application.get_env(:phoenix_kit_agent, :test_tool_listener)`, and then
   calls the function in `:test_tool_hook`, if one is set, with the tool's name
   and input — in the process that runs the tool (the turn's task).
-  `agenttest.write_item` also really writes: the setting `agenttest_written`.
   `agenttest.list_items` with `"size" => n` answers about `n` characters, and
   with `"say" => text` answers `text` as its only item.
+
+  `agenttest.write_item` is a write as a module ships one: a dry run (what
+  core asks for before a person confirms) writes nothing and answers the
+  preview in the common shape (`rows` / `changes` / `totals`) with the
+  fingerprint of the setting `agenttest_written`, and sends
+  `{:agent_test_preview, input}` instead of the message above; the real run
+  sets `agenttest_written` to the `"name"` of the input. Changing the setting
+  in between is "the data changed under the preview". While the setting
+  `agenttest_locked` is `"yes"` a dry run is refused (as a handler refuses
+  what it may not do now, the item being edited by someone else); a real run
+  of the name `"fail"` fails, after the confirmation is spent.
   """
 
   alias PhoenixKit.API.Tool
@@ -57,11 +67,47 @@ defmodule PhoenixKitAgent.Test.Tools do
     {:ok, %{"items" => ["secret"]}}
   end
 
+  def write_item(input, %{dry_run?: true}) do
+    if PhoenixKit.Settings.get_setting("agenttest_locked") == "yes",
+      do: {:error, :conflict, "The item is being edited by someone else.", %{}},
+      else: preview_item(input)
+  end
+
   def write_item(input, ctx) do
     notify("agenttest.write_item", input, ctx)
-    {:ok, _} = PhoenixKit.Settings.update_setting("agenttest_written", "yes")
-    {:ok, %{"written" => true}}
+
+    case input do
+      %{"name" => "fail"} ->
+        {:error, :conflict, "The item could not be written.", %{}}
+
+      _ ->
+        {:ok, _} = PhoenixKit.Settings.update_setting("agenttest_written", input["name"] || "yes")
+        {:ok, %{"written" => true}}
+    end
   end
+
+  defp preview_item(input) do
+    listener = Application.get_env(:phoenix_kit_agent, :test_tool_listener)
+    if is_pid(listener), do: send(listener, {:agent_test_preview, input})
+
+    written = PhoenixKit.Settings.get_setting("agenttest_written")
+
+    preview = %{
+      "rows" => [
+        %{
+          "ref" => "item",
+          "action" => "update",
+          "changes" => %{"name" => %{"from" => written, "to" => input["name"]}}
+        }
+      ],
+      "totals" => %{"rows" => 1, "update" => 1}
+    }
+
+    {:preview, preview, fingerprint(written)}
+  end
+
+  defp fingerprint(value),
+    do: :crypto.hash(:sha256, inspect(value)) |> Base.encode16(case: :lower)
 
   defp notify(name, input, ctx) do
     case Application.get_env(:phoenix_kit_agent, :test_tool_listener) do

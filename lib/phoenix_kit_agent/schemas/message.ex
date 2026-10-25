@@ -5,10 +5,17 @@ defmodule PhoenixKitAgent.Schemas.Message do
   (a limit, an error, a refusal). The table is also the assistant's journal of
   tool calls: who, what, when, and the outcome.
 
-  `conversation_uuid` and `ai_request_uuid` are set by the caller, never cast.
-  `tool_name` is the registry name of the tool, not the name shown to the model;
-  `tool_result` is the truncated result, without confirmation tokens or other
-  control fields.
+  `conversation_uuid`, `ai_request_uuid`, `assistant_message_uuid` and
+  `confirmation_uuid` are set by the caller, never cast. `tool_name` is the
+  registry name of the tool, not the name shown to the model; `tool_result` is
+  the truncated result, without confirmation tokens or other control fields.
+
+  A write the user is asked to confirm (V2 of the migrations) is a `tool`
+  message with `tool_outcome: "needs_confirmation"`, the uuid of core's
+  confirmation in `confirmation_uuid` and the `assistant` message whose tool
+  call it answers in `assistant_message_uuid`; how it ended is a `notice` with
+  the same `confirmation_uuid` and its outcome (`confirmed`, `rejected`,
+  `expired`, `changed`, `failed`). One without such a notice is still waiting.
 
   `changeset/2` is the full set of fields, for the turn loop
   (`PhoenixKitAgent.Turns`) only; `user_changeset/2` is what a person writes —
@@ -17,7 +24,8 @@ defmodule PhoenixKitAgent.Schemas.Message do
 
   `tool_summary` is virtual: the read functions of
   `PhoenixKitAgent.Conversations` fill it for a `tool` message in place of
-  the result (see there).
+  the result (see there). So is `card`: the chat panel puts there what it
+  shows of a confirmation (`PhoenixKitAgent.Confirmations.cards/4`).
   """
 
   use Ecto.Schema
@@ -29,7 +37,7 @@ defmodule PhoenixKitAgent.Schemas.Message do
   @foreign_key_type UUIDv7
 
   @roles ~w(user assistant tool notice)
-  @tool_outcomes ~w(ok error denied needs_confirmation confirmed rejected)
+  @tool_outcomes ~w(ok error denied needs_confirmation confirmed rejected expired changed failed)
 
   # The largest values of the `integer` and `bigint` columns.
   @int4_max 2_147_483_647
@@ -62,7 +70,10 @@ defmodule PhoenixKitAgent.Schemas.Message do
     )
 
     field(:ai_request_uuid, UUIDv7)
+    field(:assistant_message_uuid, UUIDv7)
+    field(:confirmation_uuid, UUIDv7)
     field(:tool_summary, :map, virtual: true)
+    field(:card, :map, virtual: true)
 
     timestamps(type: :utc_datetime_usec, updated_at: false)
   end

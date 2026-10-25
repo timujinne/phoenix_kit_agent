@@ -40,7 +40,6 @@ defmodule PhoenixKitAgent do
   alias PhoenixKit.Settings
   alias PhoenixKit.Users.Auth.Scope
   alias PhoenixKitAgent.Attachments.Work
-  alias PhoenixKitAgent.Models.Cache
   alias PhoenixKitAgent.Turns.Runner
 
   @enabled_key "agent_enabled"
@@ -170,8 +169,9 @@ defmodule PhoenixKitAgent do
 
   @doc """
   The notification type of the module: `"agent_limit"`, what the watchers get
-  when someone reaches a limit of the assistant or the AI budget refuses it
-  (`PhoenixKitAgent.Limits`). A watcher can switch it off for themselves.
+  when someone reaches a limit of the assistant (`PhoenixKitAgent.Limits`). A
+  refusal of the AI budget is told by `phoenix_kit_ai`, under its own type. A
+  watcher can switch it off for themselves.
   """
   @impl PhoenixKit.Module
   def notification_types do
@@ -179,10 +179,7 @@ defmodule PhoenixKitAgent do
       %{
         key: "agent_limit",
         label: gettext("AI assistant limits"),
-        description:
-          gettext(
-            "Someone reached a spending or turn limit of the AI assistant, or the AI budget refused it"
-          ),
+        description: gettext("Someone reached a spending or turn limit of the AI assistant"),
         actions: [],
         default: true
       }
@@ -212,10 +209,10 @@ defmodule PhoenixKitAgent do
   def children do
     [
       PhoenixKitAgent.Turns.Supervisor,
-      Cache,
       PhoenixKitAgent.Attachments.Slots,
       {Task.Supervisor, name: PhoenixKitAgent.Attachments.TaskSupervisor},
       {Task.Supervisor, name: PhoenixKitAgent.Attachments.WorkerSupervisor},
+      {Task.Supervisor, name: PhoenixKitAgent.Confirmations.TaskSupervisor},
       Work.sweep_task()
     ]
   end
@@ -259,6 +256,62 @@ defmodule PhoenixKitAgent do
 
   defp locale_of(locale) when is_binary(locale), do: locale
   defp locale_of(_none), do: nil
+
+  @doc """
+  The AI tasks of the module, for the guard of `phoenix_kit_ai`
+  (`PhoenixKitAI.Tasks`):
+
+    * `agent.chat` — the model calls of a turn. They need tools. A turn is
+      admitted once (`PhoenixKitAI.Guard.admit/4` in `PhoenixKitAgent.Turns`),
+      and the model may flag a request as off-purpose (`self_flag`).
+    * `agent.attachment` — a picture described by the vision model. It needs
+      images in.
+
+  Both are private: only holders of `ai.manage` see the reasons of their
+  flags and blocks. Both share the `free_text` block group with the AI
+  Playground. The module keeps its own per-user limits
+  (`PhoenixKitAgent.Limits`), so the guard has no user limits for them
+  (`user_limits: false`), only the limits of the task.
+  `typical_tokens` of the chat is the median of the assistant's calls
+  on a running site.
+  """
+  @spec ai_tasks() :: [PhoenixKitAI.TaskSpec.t()]
+  def ai_tasks do
+    [
+      %PhoenixKitAI.TaskSpec{
+        key: "agent.chat",
+        label: gettext_noop("AI assistant chat"),
+        gettext_backend: PhoenixKitAgent.Gettext,
+        purpose:
+          gettext_noop(
+            "A work assistant for the people of this site: it answers questions about the site's data and proposes changes through the site's tools."
+          ),
+        needs: [:tools],
+        self_flag: true,
+        private: true,
+        block_group: "free_text",
+        user_limits: false,
+        endpoints: {PhoenixKitAgent.UserConfig, :endpoint_uuids, []},
+        watchers: {PhoenixKitAgent.Limits, :guard_watchers, []},
+        typical_tokens: {5_500, 250}
+      },
+      %PhoenixKitAI.TaskSpec{
+        key: "agent.attachment",
+        label: gettext_noop("AI assistant pictures"),
+        gettext_backend: PhoenixKitAgent.Gettext,
+        purpose:
+          gettext_noop(
+            "Describe a picture or a scanned page that a user attached to a message to the AI assistant."
+          ),
+        needs: [:vision],
+        private: true,
+        block_group: "free_text",
+        user_limits: false,
+        endpoints: {PhoenixKitAgent.Config, :vision_endpoint_uuid, []},
+        watchers: {PhoenixKitAgent.Limits, :guard_watchers, []}
+      }
+    ]
+  end
 
   @doc """
   The `phoenix_kit_ai` usage sink: a request row whose `attribution` names an

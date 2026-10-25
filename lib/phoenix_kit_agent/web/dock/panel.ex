@@ -45,6 +45,12 @@ defmodule PhoenixKitAgent.Web.Dock.Panel do
   attr(:renaming, :string, default: nil)
   attr(:conversation, :any, required: true)
   attr(:messages, :any, required: true, doc: "the `:messages` stream")
+
+  attr(:pinned, :list,
+    default: [],
+    doc: "the waiting cards of the chat older than the page in the feed"
+  )
+
   attr(:earlier?, :boolean, required: true)
   attr(:activity, :any, required: true)
   attr(:timeout_ms, :integer, required: true)
@@ -162,6 +168,9 @@ defmodule PhoenixKitAgent.Web.Dock.Panel do
             <button id="pk-agent-earlier" type="button" phx-click="load_earlier" class="btn btn-ghost btn-xs">
               {gettext("Earlier messages")}
             </button>
+          </div>
+          <div :if={@pinned != []} id="pk-agent-pinned" class="space-y-3 pb-3">
+            <.feed_message :for={message <- @pinned} id={"pk-agent-pinned-" <> message.uuid} message={message} />
           </div>
           <div id="pk-agent-feed" phx-update="stream" class="space-y-3">
             <div id="pk-agent-feed-empty" class="hidden only:block py-8 text-center text-xs opacity-60">

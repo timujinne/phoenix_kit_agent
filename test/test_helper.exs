@@ -28,6 +28,7 @@ support_dir = Path.expand("support", __DIR__)
 [
   {PhoenixKitAgent.Test.Repo, "test_repo.ex"},
   {PhoenixKitAgent.Test.SchemaMigration, "schema_migration.ex"},
+  {PhoenixKitAgent.Test.AISchemaMigration, "ai_schema_migration.ex"},
   {PhoenixKitAgent.Test.Layouts, "test_layouts.ex"},
   {PhoenixKitAgent.Test.Hooks, "hooks.ex"},
   {PhoenixKitAgent.Test.DockHostLive, "dock_host_live.ex"},
@@ -90,6 +91,19 @@ repo_available =
       log: false
     )
 
+    # The chain of phoenix_kit_ai (the AI task guard's tables), the way the
+    # host's migration runs it; its key is offset from this module's own.
+    Ecto.Migrator.run(
+      TestRepo,
+      [
+        {1_000 + PhoenixKitAI.Migrations.current_version(),
+         PhoenixKitAgent.Test.AISchemaMigration}
+      ],
+      :up,
+      all: true,
+      log: false
+    )
+
     Ecto.Adapters.SQL.Sandbox.mode(TestRepo, :manual)
     true
   end
@@ -98,6 +112,12 @@ Application.put_env(:phoenix_kit_agent, :test_repo_available, repo_available)
 
 # Minimal PhoenixKit services needed by the Settings API.
 {:ok, _pid} = PhoenixKit.PubSub.Manager.start_link([])
+
+# phoenix_kit_ai's request cache owns the table the AI guard keeps its
+# admissions and its copy of the blocks in. Its capability cache is not
+# started: it would read the providers' model lists; a test declares what a
+# model can do on its endpoint instead.
+{:ok, _pid} = PhoenixKitAI.RequestCache.start_link([])
 
 # Module discovery: permission keys, sub-keys and `Scope.can?/2` read the
 # registry (this module is found by its `@phoenix_kit_module` attribute).
@@ -138,4 +158,6 @@ if missing_tools != [] do
   """)
 end
 
-ExUnit.start(exclude: exclude ++ missing_tools)
+# `render_async/2` waits for `assert_receive_timeout` (100 ms by default): too
+# short for a task that reads the database on a loaded machine.
+ExUnit.start(exclude: exclude ++ missing_tools, assert_receive_timeout: 2_000)

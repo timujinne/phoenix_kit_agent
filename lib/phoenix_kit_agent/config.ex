@@ -22,16 +22,18 @@ defmodule PhoenixKitAgent.Config do
   | `agent_tool_result_chars` | `12_000` |
   | `agent_capture_ai_content` | `false` |
 
-  Money is in micro-dollars ($1 = 1_000_000), the unit of
-  `phoenix_kit_ai_requests.cost_cents`. A stored value that is not a whole
-  number, or is outside its range (below), reads as the default. A limit of `0`
-  is a real limit (nothing allowed); a technical value must be positive.
+  Money is in micro-dollars ($1 = 1_000_000); the AI journal keeps dollars
+  (`phoenix_kit_ai_requests.cost`), read through `cost_to_micro/1`. A stored
+  value that is not a whole number, or is outside its range (below), reads as
+  the default. A limit of `0` is a real limit (nothing allowed); a technical
+  value must be positive.
 
   Core keeps a string setting to 1000 characters, so the two settings that can
   be longer — the module prompt and the watchers — are JSON settings
   (`value_json`), written by `put_system_prompt/2` and `put_limit_watchers/2`.
   The two models are written by `put_default_endpoint/2` and
-  `put_vision_endpoint/2`, which take only an AI endpoint that chats.
+  `put_vision_endpoint/2`, which take only an AI endpoint that chats and fits
+  its AI task (`agent.chat`, `agent.attachment`).
 
   Every writer records the change with who made it (`actor_uuid:` in `opts`)
   in the core Activity log: through the settings history (`setting.changed`,
@@ -88,6 +90,10 @@ defmodule PhoenixKitAgent.Config do
 
   # The longest module prompt, in characters.
   @prompt_max 16_000
+
+  @typedoc "Why `put_default_endpoint/2` or `put_vision_endpoint/2` wrote nothing."
+  @type endpoint_refusal ::
+          :invalid_endpoint | {:model_unfit | :model_unverified, [atom()]}
 
   # ── Readers ───────────────────────────────────────────────────────────
 
@@ -186,37 +192,56 @@ defmodule PhoenixKitAgent.Config do
   Sets the AI endpoint the assistant uses by default
   (`agent_default_endpoint_uuid`), or none (`nil`). Only an existing endpoint
   that chats is taken; anything else is `{:error, :invalid_endpoint}` and
-  nothing is written. `opts` go to `PhoenixKit.Settings` (`actor_uuid:`,
-  `source:`). The caller checks `agent.manage`.
+  nothing is written. A newly chosen endpoint must fit the `agent.chat` AI
+  task (`PhoenixKitAI.Tasks.check_selection/2`): one whose model is known not
+  to take tools is `{:error, {:model_unfit, missing}}`, one nobody knows
+  takes them `{:error, {:model_unverified, unclear}}`, and nothing is
+  written; the endpoint already set is not checked again. `opts` go to
+  `PhoenixKit.Settings` (`actor_uuid:`, `source:`). The caller checks
+  `agent.manage`.
   """
   @spec put_default_endpoint(String.t() | nil, keyword()) ::
-          {:ok, term()} | {:error, :invalid_endpoint | Ecto.Changeset.t()}
+          {:ok, term()} | {:error, endpoint_refusal() | Ecto.Changeset.t()}
   def put_default_endpoint(uuid, opts),
-    do: put_endpoint("agent_default_endpoint_uuid", uuid, opts)
+    do: put_endpoint("agent_default_endpoint_uuid", "agent.chat", uuid, opts)
 
   @doc """
   Sets the AI endpoint that describes pictures for a model that does not see
   them (`agent_vision_endpoint_uuid`), or none (`nil`); as
-  `put_default_endpoint/2`.
+  `put_default_endpoint/2`, against the `agent.attachment` AI task (its model
+  must take pictures).
   """
   @spec put_vision_endpoint(String.t() | nil, keyword()) ::
-          {:ok, term()} | {:error, :invalid_endpoint | Ecto.Changeset.t()}
-  def put_vision_endpoint(uuid, opts), do: put_endpoint("agent_vision_endpoint_uuid", uuid, opts)
+          {:ok, term()} | {:error, endpoint_refusal() | Ecto.Changeset.t()}
+  def put_vision_endpoint(uuid, opts),
+    do: put_endpoint("agent_vision_endpoint_uuid", "agent.attachment", uuid, opts)
 
-  defp put_endpoint(key, nil, opts),
+  defp put_endpoint(key, _task, nil, opts),
     do: Settings.update_setting_with_module(key, "", @module, opts)
 
-  defp put_endpoint(key, uuid, opts) when is_binary(uuid) do
+  defp put_endpoint(key, task, uuid, opts) when is_binary(uuid) do
     with {:ok, uuid} <- Ecto.UUID.cast(uuid),
          %Endpoint{} = endpoint <- PhoenixKitAI.get_endpoint(uuid),
-         :chat <- Endpoint.kind(endpoint) do
+         :chat <- Endpoint.kind(endpoint),
+         :ok <- fits(key, task, endpoint) do
       Settings.update_setting_with_module(key, uuid, @module, opts)
     else
-      _not_a_chat_endpoint -> {:error, :invalid_endpoint}
+      {:error, {reason, _needs}} = refusal when reason in [:model_unfit, :model_unverified] ->
+        refusal
+
+      _not_a_chat_endpoint ->
+        {:error, :invalid_endpoint}
     end
   end
 
-  defp put_endpoint(_key, _other, _opts), do: {:error, :invalid_endpoint}
+  defp put_endpoint(_key, _task, _other, _opts), do: {:error, :invalid_endpoint}
+
+  # The endpoint already set is not checked again.
+  defp fits(key, task, endpoint) do
+    if uuid_setting(key) == endpoint.uuid,
+      do: :ok,
+      else: PhoenixKitAI.Tasks.check_selection(task, endpoint)
+  end
 
   defp stored_prompt do
     case json_setting(@prompt_key) do
@@ -507,6 +532,19 @@ defmodule PhoenixKitAgent.Config do
         do: {:ok, Decimal.to_integer(Decimal.round(micro, 0))},
         else: {:error, :fraction}
     end
+  end
+
+  @doc """
+  A cost in dollars as the AI journal keeps it (`PhoenixKitAI.Request.cost`,
+  a `Decimal`, finer than a micro-dollar at times) as whole micro-dollars,
+  rounded half up: `$0.0000025` is `3`. `nil` (no cost known) stays `nil`.
+  A sum is rounded once, after it is added up, never row by row.
+  """
+  @spec cost_to_micro(Decimal.t() | nil) :: non_neg_integer() | nil
+  def cost_to_micro(nil), do: nil
+
+  def cost_to_micro(%Decimal{} = usd) do
+    usd |> Decimal.mult(@micro_per_usd) |> Decimal.round(0, :half_up) |> Decimal.to_integer()
   end
 
   @doc "Micro-dollars as dollars for a form field: `1_500_000` is `\"1.5\"`."

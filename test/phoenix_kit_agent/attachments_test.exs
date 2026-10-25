@@ -21,7 +21,7 @@ defmodule PhoenixKitAgent.AttachmentsTest do
   alias PhoenixKit.Modules.Storage.{ImageProcessor, Libraries, URLSigner}
   alias PhoenixKit.Settings
   alias PhoenixKit.Users.{Auth, Permissions, Roles}
-  alias PhoenixKitAgent.{Attachments, Conversations, Library, Models, Turns}
+  alias PhoenixKitAgent.{Attachments, Conversations, Library, Turns}
   alias PhoenixKitAgent.Attachments.{Processor, Slots, Work}
   alias PhoenixKitAgent.Schemas.{Attachment, Message, UserSettings}
   alias PhoenixKitAgent.Test.{Files, LogProbe}
@@ -36,7 +36,6 @@ defmodule PhoenixKitAgent.AttachmentsTest do
     {:ok, _} = PhoenixKitAgent.enable_system()
     {:ok, _} = PhoenixKitAI.enable_system()
     bucket = Files.local_bucket!()
-    Models.clear_cache()
 
     Application.put_env(:phoenix_kit_ai, :req_options, plug: {Req.Test, @stub}, retry: false)
     on_exit(fn -> Application.delete_env(:phoenix_kit_ai, :req_options) end)
@@ -84,33 +83,28 @@ defmodule PhoenixKitAgent.AttachmentsTest do
     await_done(attachment)
   end
 
-  # The models' listing and the answers: a chat model that sees or does not,
-  # a vision model that answers with `description`.
+  # What the AI module knows of a model's images in: what an admin declared
+  # on every endpoint of the model ("yes", "no"; nil: nothing, so unknown).
+  defp declare_vision!(model, value) do
+    settings =
+      if value, do: %{"capabilities" => %{"model" => model, "vision" => value}}, else: %{}
+
+    Repo.update_all(from(e in PhoenixKitAI.Endpoint, where: e.model == ^model),
+      set: [provider_settings: settings]
+    )
+  end
+
+  # A chat model that sees or does not, a vision model that answers with
+  # `description`.
   defp serve_ai(opts \\ []) do
     test = self()
     sees? = Keyword.get(opts, :main_sees, true)
     description = Keyword.get(opts, :description, "A grey square that reads SOFA 3 PCS.")
+    declare_vision!("a/chat", if(sees?, do: "yes", else: "no"))
+    declare_vision!("a/eyes", "yes")
 
     Req.Test.stub(@stub, fn conn ->
       case conn.request_path do
-        "/api/v1/models" ->
-          Req.Test.json(conn, %{
-            "data" => [
-              %{
-                "id" => "a/chat",
-                "name" => "chat",
-                "architecture" => %{
-                  "modality" => if(sees?, do: "text+image->text", else: "text->text")
-                }
-              },
-              %{
-                "id" => "a/eyes",
-                "name" => "eyes",
-                "architecture" => %{"modality" => "text+image->text"}
-              }
-            ]
-          })
-
         "/api/v1/chat/completions" ->
           {:ok, raw, conn} = Plug.Conn.read_body(conn)
           send(test, {:model_request, Jason.decode!(raw)})
@@ -579,6 +573,7 @@ defmodule PhoenixKitAgent.AttachmentsTest do
       assert request.endpoint_uuid == vision.uuid
       assert request.request_type == "vision"
       assert request.metadata["source"] == "agent"
+      assert request.metadata["task"] == "agent.attachment"
       # What the user showed is not kept in the AI journal, whatever the global setting.
       refute Map.has_key?(request.metadata, "input")
       refute Map.has_key?(request.metadata, "response")
@@ -633,6 +628,53 @@ defmodule PhoenixKitAgent.AttachmentsTest do
       refute_received {:model_request, _}
     end
 
+    # An Anthropic vision model, answering like Anthropic: tokens, no cost.
+    defp claude_vision!(model) do
+      serve_ai(main_sees: false)
+      test = self()
+
+      Req.Test.stub(@stub, fn conn ->
+        {:ok, raw, conn} = Plug.Conn.read_body(conn)
+        send(test, {:model_request, Jason.decode!(raw)})
+
+        Req.Test.json(conn, %{
+          "model" => model,
+          "choices" => [%{"message" => %{"role" => "assistant", "content" => "Described."}}],
+          "usage" => %{"prompt_tokens" => 30, "completion_tokens" => 8, "total_tokens" => 38}
+        })
+      end)
+
+      claude = endpoint_fixture(%{name: "Claude", provider: "anthropic", model: model})
+      declare_vision!(model, "yes")
+      {:ok, _} = Settings.update_setting("agent_vision_endpoint_uuid", claude.uuid)
+      claude
+    end
+
+    test "a vision model with a list price: the money limits hold a description", ctx do
+      # phoenix_kit_ai prices a description like a chat call, so Anthropic's
+      # list price counts it and a money limit of 0 allows nothing.
+      claude_vision!("claude-sonnet-5-5")
+      limits!(ctx.user, %{daily_cost_limit_micro_usd: 0})
+
+      attachment = add_done!(ctx, Files.png(40, 30), "a.png")
+
+      assert attachment.status == "failed"
+      assert attachment.error == "limit_reached"
+      refute_received {:model_request, _}
+    end
+
+    test "a vision model nothing prices: a money limit of 0 still lets it describe", ctx do
+      # No cost would be counted there, so only the turn limit holds it.
+      claude_vision!("claude-unknown-9")
+      limits!(ctx.user, %{daily_cost_limit_micro_usd: 0})
+
+      attachment = add_done!(ctx, Files.png(40, 30), "a.png")
+
+      assert attachment.status == "ready"
+      assert attachment.extracted_text == "Described."
+      assert_received {:model_request, _}
+    end
+
     test "with the AI module switched off a picture is not described, and nothing is paid",
          ctx do
       serve_ai(main_sees: false)
@@ -670,37 +712,28 @@ defmodule PhoenixKitAgent.AttachmentsTest do
       # The first description costs $0.001, twice the user's daily limit: the
       # second, checked only once the first is in the journal, is not made.
       limits!(ctx.user, %{daily_cost_limit_micro_usd: 500})
+      declare_vision!("a/chat", "no")
+      declare_vision!("a/eyes", "yes")
 
       Req.Test.stub(@stub, fn conn ->
-        case conn.request_path do
-          "/api/v1/models" ->
-            Req.Test.json(conn, %{
-              "data" => [
-                %{"id" => "a/chat", "architecture" => %{"modality" => "text->text"}},
-                %{"id" => "a/eyes", "architecture" => %{"modality" => "text+image->text"}}
-              ]
-            })
+        send(test, {:describing, self()})
 
-          _ ->
-            send(test, {:describing, self()})
-
-            receive do
-              :go -> :ok
-            after
-              5_000 -> :ok
-            end
-
-            Req.Test.json(conn, %{
-              "model" => "a/eyes",
-              "choices" => [%{"message" => %{"role" => "assistant", "content" => "Described."}}],
-              "usage" => %{
-                "prompt_tokens" => 30,
-                "completion_tokens" => 8,
-                "total_tokens" => 38,
-                "cost" => 0.001
-              }
-            })
+        receive do
+          :go -> :ok
+        after
+          5_000 -> :ok
         end
+
+        Req.Test.json(conn, %{
+          "model" => "a/eyes",
+          "choices" => [%{"message" => %{"role" => "assistant", "content" => "Described."}}],
+          "usage" => %{
+            "prompt_tokens" => 30,
+            "completion_tokens" => 8,
+            "total_tokens" => 38,
+            "cost" => 0.001
+          }
+        })
       end)
 
       {:ok, first} = add(ctx, Files.png(40, 30), "a.png")
@@ -725,15 +758,9 @@ defmodule PhoenixKitAgent.AttachmentsTest do
       vision_endpoint!()
 
       Req.Test.stub(@stub, fn conn ->
-        case conn.request_path do
-          "/api/v1/models" ->
-            Req.Test.json(conn, %{"data" => []})
-
-          _ ->
-            conn
-            |> Plug.Conn.put_resp_content_type("application/json")
-            |> Plug.Conn.send_resp(500, Jason.encode!(%{"error" => %{"message" => "boom"}}))
-        end
+        conn
+        |> Plug.Conn.put_resp_content_type("application/json")
+        |> Plug.Conn.send_resp(500, Jason.encode!(%{"error" => %{"message" => "boom"}}))
       end)
 
       attachment = add_done!(ctx, Files.png(40, 30), "a.png")
@@ -1219,31 +1246,18 @@ defmodule PhoenixKitAgent.AttachmentsTest do
       # Between the upload and the send the user's model changes to one that is blind.
       blind = endpoint_fixture(%{name: "Blind", model: "a/blind"})
       limits!(ctx.user, %{endpoint_uuid: blind.uuid})
+      declare_vision!("a/blind", "no")
 
       test = self()
 
       Req.Test.stub(@stub, fn conn ->
-        case conn.request_path do
-          "/api/v1/models" ->
-            Req.Test.json(conn, %{
-              "data" => [
-                %{
-                  "id" => "a/blind",
-                  "name" => "b",
-                  "architecture" => %{"modality" => "text->text"}
-                }
-              ]
-            })
+        {:ok, raw, conn} = Plug.Conn.read_body(conn)
+        send(test, {:model_request, Jason.decode!(raw)})
 
-          _ ->
-            {:ok, raw, conn} = Plug.Conn.read_body(conn)
-            send(test, {:model_request, Jason.decode!(raw)})
-
-            Req.Test.json(conn, %{
-              "model" => "a/blind",
-              "choices" => [%{"message" => %{"role" => "assistant", "content" => "ok"}}]
-            })
-        end
+        Req.Test.json(conn, %{
+          "model" => "a/blind",
+          "choices" => [%{"message" => %{"role" => "assistant", "content" => "ok"}}]
+        })
       end)
 
       {:ok, turn_ref} =
@@ -1601,9 +1615,61 @@ defmodule PhoenixKitAgent.AttachmentsTest do
       refute_received {:model_request, _}
     end
 
+    test "a user the AI guard blocked gets the guard's code, not a model error", ctx do
+      PhoenixKitAI.Guard.reset_caches()
+      on_exit(&PhoenixKitAI.Guard.reset_caches/0)
+      serve_ai(main_sees: false)
+      vision_endpoint!()
+
+      {:ok, _} =
+        PhoenixKitAI.Guard.block(scope_of(owner_fixture()), "agent.chat", ctx.user.uuid, "x", nil)
+
+      attachment = add_done!(ctx, Files.png(40, 30), "sofa.png")
+
+      assert attachment.status == "failed"
+      assert attachment.error == "task_blocked"
+      refute_received {:model_request, _}
+    end
+
+    test "a vision model the guard refuses gets its own code", ctx do
+      serve_ai(main_sees: false)
+      vision_endpoint!()
+      declare_vision!("a/eyes", "no")
+
+      attachment = add_done!(ctx, Files.png(40, 30), "sofa.png")
+
+      assert attachment.status == "failed"
+      assert attachment.error == "model_unfit"
+      refute_received {:model_request, _}
+
+      declare_vision!("a/eyes", nil)
+      {:ok, _} = Settings.update_setting("ai_guard_verified_models_only", "true")
+
+      attachment = add_done!(ctx, Files.png(41, 30), "sofa-2.png")
+      assert attachment.error == "model_unverified"
+      refute_received {:model_request, _}
+    end
+
+    test "the task's own limit reached gets its own code", ctx do
+      PhoenixKitAI.Guard.reset_caches()
+      on_exit(&PhoenixKitAI.Guard.reset_caches/0)
+      serve_ai(main_sees: false)
+      vision_endpoint!()
+
+      {:ok, _} =
+        PhoenixKitAI.TaskLimits.update_settings(scope_of(owner_fixture()), "agent.attachment", %{
+          "limits" => %{"task" => %{"requests" => %{"day" => "0"}}}
+        })
+
+      attachment = add_done!(ctx, Files.png(40, 30), "sofa.png")
+
+      assert attachment.error == "task_limit_exceeded"
+      refute_received {:model_request, _}
+    end
+
     @tag :imagemagick
     test "a description is never answered from, or put into, a cache the users share", ctx do
-      start_supervised!(PhoenixKitAI.RequestCache)
+      # The request cache runs for the whole suite (test_helper.exs).
       Application.put_env(:phoenix_kit_ai, :request_cache, default: true)
       on_exit(fn -> Application.delete_env(:phoenix_kit_ai, :request_cache) end)
 
@@ -1724,7 +1790,6 @@ defmodule PhoenixKitAgent.AttachmentsTest do
       assert attachment.extracted_text == nil
 
       # Between the upload and the send the model changes to one that declares nothing.
-      Models.clear_cache()
       serve_models_unknown()
 
       {:ok, turn_ref} =
@@ -1835,54 +1900,38 @@ defmodule PhoenixKitAgent.AttachmentsTest do
     end
   end
 
-  # A model listing that says nothing of what the chat model takes; a vision
-  # model that answers "Described.".
+  # Nothing known of what the chat model takes; a vision model that answers
+  # "Described.".
   defp serve_models_unknown do
     test = self()
+    declare_vision!("a/chat", nil)
+    declare_vision!("a/eyes", "yes")
 
     Req.Test.stub(@stub, fn conn ->
-      case conn.request_path do
-        "/api/v1/models" ->
-          Req.Test.json(conn, %{
-            "data" => [
-              %{"id" => "a/chat", "architecture" => %{}},
-              %{"id" => "a/eyes", "architecture" => %{"modality" => "text+image->text"}}
-            ]
-          })
+      {:ok, raw, conn} = Plug.Conn.read_body(conn)
+      send(test, {:model_request, Jason.decode!(raw)})
 
-        _ ->
-          {:ok, raw, conn} = Plug.Conn.read_body(conn)
-          send(test, {:model_request, Jason.decode!(raw)})
-
-          Req.Test.json(conn, %{
-            "choices" => [%{"message" => %{"role" => "assistant", "content" => "Described."}}]
-          })
-      end
+      Req.Test.json(conn, %{
+        "choices" => [%{"message" => %{"role" => "assistant", "content" => "Described."}}]
+      })
     end)
   end
 
   # A chat model that sees, and whose every call is refused by the provider.
   defp serve_models_seeing_failing(status \\ 400) do
     test = self()
+    declare_vision!("a/chat", "yes")
 
     Req.Test.stub(@stub, fn conn ->
-      case conn.request_path do
-        "/api/v1/models" ->
-          Req.Test.json(conn, %{
-            "data" => [%{"id" => "a/chat", "architecture" => %{"modality" => "text+image->text"}}]
-          })
+      {:ok, raw, conn} = Plug.Conn.read_body(conn)
+      send(test, {:model_request, Jason.decode!(raw)})
 
-        _ ->
-          {:ok, raw, conn} = Plug.Conn.read_body(conn)
-          send(test, {:model_request, Jason.decode!(raw)})
-
-          conn
-          |> Plug.Conn.put_resp_content_type("application/json")
-          |> Plug.Conn.send_resp(
-            status,
-            Jason.encode!(%{"error" => %{"message" => "no images"}})
-          )
-      end
+      conn
+      |> Plug.Conn.put_resp_content_type("application/json")
+      |> Plug.Conn.send_resp(
+        status,
+        Jason.encode!(%{"error" => %{"message" => "no images"}})
+      )
     end)
   end
 

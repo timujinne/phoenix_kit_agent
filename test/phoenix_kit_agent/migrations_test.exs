@@ -1,9 +1,9 @@
 defmodule PhoenixKitAgent.MigrationsTest do
   @moduledoc """
   The module-owned chain, run as the real SQL inside the sandbox: the tables it
-  builds, their foreign keys and the list index, a re-run, and a down/up round
-  trip — through the statements and through `Ecto.Migrator` with the wrapper a
-  host's generated migration uses.
+  builds, their foreign keys and the list index, the confirmation columns of
+  V2, a re-run, and down/up round trips — through the statements and through
+  `Ecto.Migrator` with the wrapper a host's generated migration uses.
   """
 
   use PhoenixKitAgent.DataCase, async: false
@@ -84,14 +84,112 @@ defmodule PhoenixKitAgent.MigrationsTest do
 
   describe "the chain as built at boot" do
     test "is at the current version, with all five tables" do
-      assert Migrations.current_version() == 1
-      assert marker() == "pk_agent_schema:1"
+      assert Migrations.current_version() == 2
+      assert marker() == "pk_agent_schema:2"
       assert existing_tables() == Enum.sort(@tables)
-      assert Migrations.migrated_version_runtime() == 1
+      assert Migrations.migrated_version_runtime() == 2
     end
 
     test "user rows cascade, journal and endpoint links are set to null; the indexes" do
       assert_structure()
+    end
+  end
+
+  # V2: the two links of a message and the outcomes of a confirmation.
+  @v1_outcomes ~w(ok error denied needs_confirmation confirmed rejected)
+  @v2_outcomes @v1_outcomes ++ ~w(expired changed failed)
+
+  defp message_columns do
+    query("""
+    SELECT column_name, data_type FROM information_schema.columns
+    WHERE table_name = 'phoenix_kit_agent_messages'
+      AND column_name IN ('assistant_message_uuid', 'confirmation_uuid')
+    ORDER BY 1
+    """)
+  end
+
+  defp confirmation_index do
+    query(
+      "SELECT indexdef FROM pg_indexes WHERE indexname = 'phoenix_kit_agent_messages_confirmation_uuid_index'"
+    )
+  end
+
+  # Whether the CHECK of the messages table names `outcome`.
+  defp outcome_accepted?(outcome) do
+    [[definition]] =
+      query(
+        "SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname = 'phoenix_kit_agent_messages_tool_outcome_check'"
+      )
+
+    String.contains?(definition, "'#{outcome}'")
+  end
+
+  defp assert_v2 do
+    assert message_columns() == [
+             ["assistant_message_uuid", "uuid"],
+             ["confirmation_uuid", "uuid"]
+           ]
+
+    assert [[index]] = confirmation_index()
+    assert index =~ "(confirmation_uuid)"
+    assert index =~ "WHERE (confirmation_uuid IS NOT NULL)"
+
+    for outcome <- @v2_outcomes, do: assert(outcome_accepted?(outcome), outcome)
+    refute outcome_accepted?("maybe")
+  end
+
+  defp insert_notice(outcome) do
+    user = user_fixture()
+    chat = conversation_fixture(user)
+
+    Repo.query!(
+      "INSERT INTO phoenix_kit_agent_messages (conversation_uuid, role, tool_outcome, confirmation_uuid) VALUES ($1, 'notice', $2, $3) RETURNING uuid",
+      [Ecto.UUID.dump!(chat.uuid), outcome, Ecto.UUID.dump!(Ecto.UUID.generate())]
+    ).rows
+  end
+
+  describe "V2" do
+    test "the database refuses an outcome that is not one of the nine" do
+      assert_raise Postgrex.Error, ~r/phoenix_kit_agent_messages_tool_outcome_check/, fn ->
+        insert_notice("maybe")
+      end
+    end
+
+    test "down to 1 takes the columns, the index and the new outcomes away; up brings them back" do
+      [[uuid]] = insert_notice("expired")
+
+      run(Migrations.down_statements("public", 1))
+
+      assert marker() == "pk_agent_schema:1"
+      assert message_columns() == []
+      assert confirmation_index() == []
+      assert existing_tables() == Enum.sort(@tables)
+      for outcome <- @v1_outcomes, do: assert(outcome_accepted?(outcome), outcome)
+      refute outcome_accepted?("expired")
+
+      # The notice stays, without the outcome V1 cannot hold.
+      assert [[nil]] =
+               query("SELECT tool_outcome FROM phoenix_kit_agent_messages WHERE uuid = $1", [uuid])
+
+      # A second down to 1 does not fail.
+      run(Migrations.down_statements("public", 1))
+
+      run(Migrations.up_statements("public"))
+      assert marker() == "pk_agent_schema:2"
+      assert_v2()
+      assert_structure()
+    end
+
+    test "up from 1 to 2 keeps the chats and messages of V1" do
+      [[uuid]] = insert_notice("confirmed")
+      run(Migrations.down_statements("public", 1))
+
+      run(Migrations.up_statements("public", 2))
+
+      assert [["confirmed"]] =
+               query("SELECT tool_outcome FROM phoenix_kit_agent_messages WHERE uuid = $1", [uuid])
+
+      assert_v2()
     end
   end
 
@@ -100,8 +198,9 @@ defmodule PhoenixKitAgent.MigrationsTest do
       run(Migrations.up_statements("public"))
       run(Migrations.up_statements("public"))
 
-      assert marker() == "pk_agent_schema:1"
+      assert marker() == "pk_agent_schema:2"
       assert existing_tables() == Enum.sort(@tables)
+      assert_v2()
     end
 
     test "down to 0 drops every table of the module, and up builds them again" do
@@ -110,11 +209,12 @@ defmodule PhoenixKitAgent.MigrationsTest do
 
       run(Migrations.up_statements("public"))
       assert existing_tables() == Enum.sort(@tables)
-      assert marker() == "pk_agent_schema:1"
+      assert marker() == "pk_agent_schema:2"
 
       # Built here, from the statements as they are now — not the schema a
       # persistent test database kept from an earlier V1.
       assert_structure()
+      assert_v2()
     end
 
     test "down does not touch a table that is not the module's" do
@@ -127,8 +227,8 @@ defmodule PhoenixKitAgent.MigrationsTest do
     end
 
     test "a version the chain does not have is refused in both directions" do
-      assert_raise ArgumentError, fn -> Migrations.up_statements("public", 2) end
-      assert_raise ArgumentError, fn -> Migrations.down_statements("public", 2) end
+      assert_raise ArgumentError, fn -> Migrations.up_statements("public", 3) end
+      assert_raise ArgumentError, fn -> Migrations.down_statements("public", 3) end
     end
 
     test "an invalid prefix is refused" do
@@ -156,8 +256,9 @@ defmodule PhoenixKitAgent.MigrationsTest do
 
       assert :ok = Ecto.Migrator.up(Repo, version, SchemaMigration, @migrator_opts)
       assert existing_tables() == Enum.sort(@tables)
-      assert Migrations.migrated_version_runtime() == 1
+      assert Migrations.migrated_version_runtime() == 2
       assert_structure()
+      assert_v2()
     end
   end
 end

@@ -112,6 +112,131 @@ defmodule PhoenixKitAgent.TranslationsTest do
     assert {"Schreiben Sie zuerst eine Nachricht.", _} = texts.("de")
   end
 
+  test "the AI guard's notices, refusals and attachment codes have their own texts, in every language" do
+    codes =
+      ~w(task_blocked task_limit_exceeded model_unfit model_unverified no_provider_for_params)
+
+    general = Texts.refusal(:something_unknown)
+    unread = Texts.attachment_error("something_unknown")
+
+    texts = fn locale ->
+      Gettext.with_locale(PhoenixKitAgent.Gettext, locale, fn ->
+        Enum.map(codes, &Texts.notice/1) ++
+          Enum.map(codes, &Texts.attachment_error/1) ++
+          [
+            Texts.refusal(:task_blocked),
+            Texts.refusal(:task_limit_exceeded),
+            Texts.refusal({:task_blocked, "free_text"}),
+            Texts.refusal({:task_limit_exceeded, :task, :requests, :day})
+          ]
+      end)
+    end
+
+    english = texts.("en")
+    assert Enum.all?(english, &is_binary/1)
+    refute general in english
+    refute unread in english
+
+    for locale <- @languages -- ["en"] do
+      translated = texts.(locale)
+      assert Enum.all?(translated, &is_binary/1), locale
+
+      for {mine, en} <- Enum.zip(translated, english),
+          do: assert(mine != en, "#{locale}: #{inspect(en)} is in English")
+    end
+  end
+
+  test "an endpoint only an administrator can fix is told in every language, with no retry" do
+    codes =
+      ~w(invalid_api_key api_key_forbidden endpoint_not_found endpoint_disabled endpoint_no_model
+         integration_not_configured integration_deleted not_configured)
+
+    texts =
+      Map.new(@languages, fn locale ->
+        {locale,
+         Gettext.with_locale(PhoenixKitAgent.Gettext, locale, fn ->
+           codes |> Enum.map(&Texts.notice/1) |> Enum.uniq()
+         end)}
+      end)
+
+    for {locale, unique} <- texts do
+      assert [text] = unique, locale
+      refute text =~ ~r/try again/i, locale
+    end
+
+    [english] = texts["en"]
+    assert english =~ "An administrator has to check"
+
+    for locale <- @languages -- ["en"],
+        do: assert(texts[locale] != texts["en"], "#{locale}: is in English")
+  end
+
+  test "an account out of credit is told in every language, without a provider or a retry" do
+    texts =
+      Map.new(@languages, fn locale ->
+        {locale,
+         Gettext.with_locale(PhoenixKitAgent.Gettext, locale, fn ->
+           Texts.notice("insufficient_credits")
+         end)}
+      end)
+
+    assert texts["en"] ==
+             "The AI account behind the assistant has run out of credit. " <>
+               "An administrator has to top it up or choose another model."
+
+    assert texts["ru"] =~ "закончились средства"
+    assert texts["et"] =~ "krediit on otsas"
+    assert texts["uk"] =~ "закінчилися кошти"
+    assert texts["fr"] =~ "n'a plus de crédit"
+    assert texts["de"] =~ "kein Guthaben mehr"
+
+    for {locale, text} <- texts do
+      refute text =~ ~r/Z\.ai|OpenAI|Anthropic|OpenRouter|try again/i,
+             "#{locale}: #{inspect(text)}"
+
+      rate_limited =
+        Gettext.with_locale(PhoenixKitAgent.Gettext, locale, fn ->
+          Texts.notice("rate_limited")
+        end)
+
+      assert text != rate_limited
+    end
+  end
+
+  test "fixed model-error notices and duplicate-card refusals are translated in every locale" do
+    retry = "The model did not answer. Try again."
+
+    pictures =
+      "The model did not answer; it may not take the pictures. " <>
+        "The files were not sent with the message: you can send them again."
+
+    for locale <- @languages do
+      Gettext.with_locale(PhoenixKitAgent.Gettext, locale, fn ->
+        for code <- ~w(request_timeout invalid_json_response invalid_response_format
+                        no_choices_in_response api_error connection_error model_error) do
+          translated = Texts.notice(code, retry)
+          assert is_binary(translated)
+          if locale != "en", do: refute(translated == retry)
+        end
+
+        translated_pictures = Texts.notice("api_error", pictures)
+        assert translated_pictures != Texts.notice("api_error", retry)
+        assert Texts.notice("api_error", "Details of its own") == "Details of its own"
+
+        refusal = Texts.card_refusal(:already_waiting)
+        assert refusal != Texts.card_refusal(:unknown)
+
+        if locale != "en" do
+          refute translated_pictures == pictures
+          refute refusal =~ "already waiting"
+        end
+
+        # The code's specific guidance still takes priority over older text.
+        assert Texts.notice("insufficient_credits", retry) == Texts.notice("insufficient_credits")
+      end)
+    end
+  end
+
   test "the labels of the permission and of the tabs are in the catalogues" do
     meta = PhoenixKitAgent.permission_metadata()
 

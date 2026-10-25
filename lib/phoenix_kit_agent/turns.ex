@@ -1,7 +1,8 @@
 defmodule PhoenixKitAgent.Turns do
   @moduledoc """
   A turn of the assistant (spec §6.1): the user's message, then rounds of
-  model calls and read-only tool calls until the model answers.
+  model calls and tool calls until the model answers, or until a write waits
+  for the user's confirmation (`PhoenixKitAgent.Confirmations`).
 
   Like `PhoenixKitAgent.Conversations`, every function acts for a **live
   browser session** — the `{session_token_uuid, user_uuid}` reference of
@@ -24,7 +25,8 @@ defmodule PhoenixKitAgent.Turns do
          ready, the user's own, of this chat and not sent yet
          (`PhoenixKitAgent.Attachments`);
     2. the locks (`PhoenixKitAgent.Turns.Locks`): one turn per chat
-       (`:conversation_busy`) and per user (`:turn_in_flight`); the history
+       (`:conversation_busy`) and per user (`:turn_in_flight`, or
+       `:click_in_flight` while a click on a confirmation card runs); the history
        is read only once they are taken, so it holds the previous turn's end;
     3. the limits (`PhoenixKitAgent.Limits.check/3`), under the locks: the
        user's previous turn is over, so all it spent is in the AI journal. A
@@ -33,6 +35,17 @@ defmodule PhoenixKitAgent.Turns do
        — the one refusal that writes — a `notice` goes into the chat (error
        `daily_cost_limit`, `monthly_cost_limit` or `daily_turn_limit`) and the
        limit is announced (`PhoenixKitAgent.Limits.announce_reached/2`);
+    3a. the AI guard admits the turn (`PhoenixKitAI.Guard.admit/4`, task
+       `agent.chat`, for as long as the turn's lock may live): the user's
+       block (`{:error, :task_blocked}`) and the task's own limits
+       (`{:error, :task_limit_exceeded}`) are checked here once, and the
+       rounds pass the admission on (`guard_admission:`), so a turn admitted
+       before a block or a limit runs to its end. A refusal is like a limit
+       reached: nothing runs or is stored but a `notice` (error
+       `task_blocked` or `task_limit_exceeded`), once a day per chat (a
+       monthly limit: once a month); an answer of the guard this module does
+       not know starts no turn either (`model_error`, a log line without
+       it);
     4. the task starts (`PhoenixKitAgent.Turns.Monitor`), and `{:ok,
        turn_ref}` is returned; there the user message is stored (and the
        attachments linked to it), then the rounds run
@@ -52,16 +65,21 @@ defmodule PhoenixKitAgent.Turns do
 
   The assistant acts with the session's rights only: tools are listed and run
   by `PhoenixKit.API.Executor.visible_for/3` / `execute_as/5` with `allow:
-  :read`, for this session; there is no service user and no API key.
+  :all`, for this session; there is no service user and no API key. A write
+  is never run by the turn: core holds it for the user's click
+  (`PhoenixKitAgent.Turns.Runner`, "A write"), and only modules that let a
+  session write (core's `api_session_write_modules`) show any.
   """
 
   import Ecto.Query, only: [from: 2]
 
+  require Logger
+
   alias PhoenixKit.PubSub.Manager, as: PubSub
   alias PhoenixKit.RepoHelper
-  alias PhoenixKitAgent.{Config, Conversations, Limits, Prompt, Spend, UserConfig}
+  alias PhoenixKitAgent.{Config, Confirmations, Conversations, Limits, Prompt, Spend, UserConfig}
   alias PhoenixKitAgent.Schemas.{Attachment, Conversation, Message}
-  alias PhoenixKitAgent.Turns.{History, Locks, Monitor}
+  alias PhoenixKitAgent.Turns.{History, Locks, Monitor, Runner}
 
   @registry PhoenixKitAgent.Turns.Registry
 
@@ -80,7 +98,11 @@ defmodule PhoenixKitAgent.Turns do
           | :too_many_attachments
           | :conversation_busy
           | :turn_in_flight
+          | :click_in_flight
           | {:limit_reached, Limits.kind()}
+          | :task_blocked
+          | :task_limit_exceeded
+          | :model_error
           | :not_running
           | {:not_started, Monitor.exit_class()}
           | {:monitor_unavailable, Monitor.exit_class()}
@@ -302,7 +324,10 @@ defmodule PhoenixKitAgent.Turns do
       conversation
       |> locked(turn_ref, fn ->
         with :ok <- Limits.check(user.settings, user.endpoint_uuid),
-             do: begin(session_ref, conversation, text, attachments, user, turn_ref, opts)
+             {:ok, admission} <- admit(conversation.user_uuid, turn_ref) do
+          user = Map.put(user, :guard_admission, admission)
+          begin(session_ref, conversation, text, attachments, user, turn_ref, opts)
+        end
       end)
       |> started(conversation, turn_ref, user)
     end
@@ -320,6 +345,16 @@ defmodule PhoenixKitAgent.Turns do
     end
 
     {:error, {:limit_reached, reached.kind}}
+  end
+
+  defp started({:error, {:guard, reason, period}}, conversation, turn_ref, _user) do
+    try do
+      guard_refused(conversation, turn_ref, reason, period)
+    after
+      Locks.release(conversation.user_uuid, conversation.uuid, turn_ref)
+    end
+
+    {:error, reason}
   end
 
   defp started({:error, _reason} = error, conversation, turn_ref, _user) do
@@ -344,7 +379,7 @@ defmodule PhoenixKitAgent.Turns do
   defp limit_reached(conversation, turn_ref, settings, reached) do
     code = limit_code(reached.kind)
 
-    unless notice_in_period?(conversation, code, reached.kind) do
+    unless notice_in_period?(conversation, code, limit_period(reached.kind)) do
       _ =
         Conversations.add_turn_message(conversation.user_uuid, conversation.uuid, %{
           turn_ref: turn_ref,
@@ -357,9 +392,57 @@ defmodule PhoenixKitAgent.Turns do
     Limits.announce_reached(settings, reached)
   end
 
-  defp notice_in_period?(conversation, code, kind) do
+  # The guard's refusal of the turn (spec §6.2), as `{:guard, reason,
+  # period}` for `started/4`: the refusal of `PhoenixKitAI.Guard.admit/4`
+  # names the block group or the limit, which the chat does not need.
+  defp admit(user_uuid, turn_ref) do
+    "agent.chat"
+    |> PhoenixKitAI.Guard.admit(user_uuid, turn_ref, lock_ttl_s())
+    |> admission()
+  end
+
+  @doc false
+  # The answer of `PhoenixKitAI.Guard.admit/4` as `launch/6` takes it. An
+  # answer this module does not know (a later version of the guard) starts
+  # no turn: it is a `model_error` notice, and the log gets one line without
+  # the answer, which may name the user.
+  @spec admission(term()) :: {:ok, String.t()} | {:error, {:guard, atom(), :day | :month}}
+  def admission({:ok, admission}) when is_binary(admission), do: {:ok, admission}
+  def admission({:error, {:task_blocked, _group}}), do: {:error, {:guard, :task_blocked, :day}}
+
+  def admission({:error, {:task_limit_exceeded, _scope, _unit, period}})
+      when period in [:day, :month],
+      do: {:error, {:guard, :task_limit_exceeded, period}}
+
+  def admission(_unknown) do
+    Logger.warning(
+      "[PhoenixKitAgent] the AI guard's admission answered in an unknown form; no turn"
+    )
+
+    {:error, {:guard, :model_error, :day}}
+  end
+
+  # Once a day per chat (a monthly limit: once a month), like a limit of the
+  # module's own; the guard tells the user and the watchers itself.
+  defp guard_refused(conversation, turn_ref, reason, period) do
+    code = Atom.to_string(reason)
+
+    unless notice_in_period?(conversation, code, period) do
+      _ =
+        Conversations.add_turn_message(conversation.user_uuid, conversation.uuid, %{
+          turn_ref: turn_ref,
+          role: "notice",
+          content: Runner.guard_text(reason),
+          error: code
+        })
+    end
+
+    :ok
+  end
+
+  defp notice_in_period?(conversation, code, period) do
     windows = Spend.windows()
-    {from, _to} = if kind == :monthly_cost, do: windows.month, else: windows.day
+    {from, _to} = if period == :month, do: windows.month, else: windows.day
 
     repo().exists?(
       from(m in Message,
@@ -369,6 +452,9 @@ defmodule PhoenixKitAgent.Turns do
       )
     )
   end
+
+  defp limit_period(:monthly_cost), do: :month
+  defp limit_period(_daily), do: :day
 
   defp limit_code(:daily_cost), do: "daily_cost_limit"
   defp limit_code(:monthly_cost), do: "monthly_cost_limit"
@@ -388,6 +474,9 @@ defmodule PhoenixKitAgent.Turns do
   defp begin(session_ref, conversation, text, attachments, user, turn_ref, opts) do
     user_uuid = conversation.user_uuid
 
+    # Under the user's lock: no click settles a card meanwhile.
+    :ok = Confirmations.settle_lapsed_in_turn(session_ref, conversation)
+
     request_context =
       opts |> Keyword.get(:request_context, []) |> Keyword.put_new(:request_id, turn_ref)
 
@@ -404,7 +493,8 @@ defmodule PhoenixKitAgent.Turns do
       request_context: request_context,
       max_rounds: Config.max_tool_rounds(),
       result_chars: Config.tool_result_chars(),
-      capture?: Config.capture_ai_content?()
+      capture?: Config.capture_ai_content?(),
+      guard_admission: user.guard_admission
     }
 
     Monitor.start_turn(turn, deadline_ms(opts), [self() | Process.get(:"$callers", [])])
@@ -436,9 +526,21 @@ defmodule PhoenixKitAgent.Turns do
     messages =
       repo().all(
         from(m in Message,
-          where: m.conversation_uuid == ^conversation.uuid and m.role in ["user", "assistant"],
+          where:
+            m.conversation_uuid == ^conversation.uuid and
+              (m.role in ["user", "assistant"] or
+                 (m.role in ["notice", "tool"] and not is_nil(m.confirmation_uuid))),
           order_by: [asc: m.inserted_at, asc: m.uuid],
-          select: struct(m, [:uuid, :role, :content, :tool_calls])
+          select:
+            struct(m, [
+              :uuid,
+              :role,
+              :content,
+              :tool_calls,
+              :tool_name,
+              :tool_outcome,
+              :confirmation_uuid
+            ])
         )
       )
 
@@ -466,7 +568,11 @@ defmodule PhoenixKitAgent.Turns do
     end
   end
 
-  defp lock_ttl_s, do: Config.turn_deadline_s() + @lock_grace_s
+  @doc false
+  # How old a turn's lock must be before another may take it over (spec §6.1
+  # step 3); `PhoenixKitAgent.Confirmations` takes the user's lock with it.
+  @spec lock_ttl_s() :: pos_integer()
+  def lock_ttl_s, do: Config.turn_deadline_s() + @lock_grace_s
 
   # ── stop ────────────────────────────────────────────────────────
 

@@ -24,7 +24,7 @@ defmodule PhoenixKitAgent.Web.SpendingLiveTest do
       user_uuid: user.uuid,
       model: endpoint.model,
       status: "success",
-      cost_cents: cost,
+      cost: journal_cost(cost),
       metadata: Keyword.get(opts, :metadata, %{"source" => "agent"}),
       inserted_at: Keyword.get(opts, :at, DateTime.truncate(DateTime.utc_now(), :second))
     })

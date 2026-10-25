@@ -4,9 +4,10 @@ defmodule PhoenixKitAgent.Web.Dock.Texts do
   code: the refusals of `PhoenixKitAgent.Conversations`,
   `PhoenixKitAgent.Turns` and `PhoenixKitAgent.Attachments`, the codes of a
   failed attachment (`PhoenixKitAgent.Attachments.Processor`), the notices of
-  a turn (stored in English, shown by their code) and the upload errors of
-  LiveView. A code this module does not know gets a general text,
-  never the code itself.
+  a turn (stored in English, shown by their code), the states and refusals of
+  a confirmation card (`PhoenixKitAgent.Confirmations`) and the upload errors
+  of LiveView. A code this module does not know gets a general text, never
+  the code itself.
   """
 
   use Gettext, backend: PhoenixKitAgent.Gettext
@@ -52,6 +53,9 @@ defmodule PhoenixKitAgent.Web.Dock.Texts do
   def refusal(:turn_in_flight),
     do: gettext("The assistant is answering in another chat. Wait for it to finish.")
 
+  def refusal(:click_in_flight),
+    do: gettext("A change is being confirmed right now. Send your message again in a moment.")
+
   def refusal({:limit_reached, :daily_cost}),
     do: gettext("You have reached your daily spending limit for the assistant.")
 
@@ -60,6 +64,13 @@ defmodule PhoenixKitAgent.Web.Dock.Texts do
 
   def refusal({:limit_reached, :daily_turns}),
     do: gettext("You have used all your assistant turns for today.")
+
+  def refusal(reason) when reason in [:task_blocked, :task_limit_exceeded],
+    do: notice(Atom.to_string(reason))
+
+  def refusal({:task_blocked, _group}), do: refusal(:task_blocked)
+
+  def refusal({:task_limit_exceeded, _scope, _unit, _period}), do: refusal(:task_limit_exceeded)
 
   def refusal(:not_running), do: gettext("Nothing is running in this chat.")
 
@@ -76,6 +87,8 @@ defmodule PhoenixKitAgent.Web.Dock.Texts do
       )
 
   def refusal(:files_pending), do: gettext("Wait until the files are read.")
+
+  def refusal(:rate_limited), do: gettext("Too many requests at once; try again in a minute.")
 
   def refusal(reason) when reason in [:file_unreadable, :empty_file],
     do: gettext("The file could not be read, or it is empty.")
@@ -131,6 +144,16 @@ defmodule PhoenixKitAgent.Web.Dock.Texts do
   def attachment_error("budget_exceeded"),
     do: gettext("The AI budget is used up, so it was not read.")
 
+  def attachment_error("task_blocked"),
+    do: gettext("The AI assistant is blocked for you, so it was not read.")
+
+  def attachment_error("task_limit_exceeded"),
+    do: gettext("The AI assistant has reached its limit for now, so it was not read.")
+
+  def attachment_error(code)
+      when code in ["model_unfit", "model_unverified", "no_provider_for_params"],
+      do: gettext("The model that reads pictures cannot be used for it now, so it was not read.")
+
   def attachment_error("model_error"), do: gettext("The model could not read it.")
   def attachment_error("timeout"), do: gettext("Reading it took too long.")
 
@@ -182,8 +205,49 @@ defmodule PhoenixKitAgent.Web.Dock.Texts do
   def notice("forbidden"), do: gettext("The assistant is no longer available to you.")
   def notice("ai_disabled"), do: gettext("The AI module is switched off.")
   def notice("rate_limited"), do: gettext("Too many requests at once; try again in a minute.")
+
+  def notice("insufficient_credits"),
+    do:
+      gettext(
+        "The AI account behind the assistant has run out of credit. An administrator has to top it up or choose another model."
+      )
+
+  # The endpoint itself cannot be used: trying again changes nothing.
+  def notice(code)
+      when code in ~w(invalid_api_key api_key_forbidden endpoint_not_found endpoint_disabled
+                      endpoint_no_model integration_not_configured integration_deleted
+                      not_configured),
+      do:
+        gettext(
+          "The AI endpoint behind the assistant cannot be used right now. An administrator has to check its settings."
+        )
+
   def notice("not_found"), do: gettext("This chat is gone.")
   def notice("budget_exceeded"), do: gettext("The AI budget is used up.")
+
+  def notice("task_blocked"),
+    do: gettext("The AI assistant is blocked for you. An administrator can lift the block.")
+
+  def notice("task_limit_exceeded"),
+    do: gettext("The AI assistant has reached its limit for now. Try again later.")
+
+  def notice("model_unfit"),
+    do:
+      gettext(
+        "The model chosen for the assistant cannot do what it needs. An administrator chooses another one."
+      )
+
+  def notice("model_unverified"),
+    do:
+      gettext(
+        "It is not known whether the model chosen for the assistant can do what it needs. An administrator marks what the model can do on its AI endpoint, or chooses another one."
+      )
+
+  def notice("no_provider_for_params"),
+    do:
+      gettext(
+        "No provider of the model takes the request as its AI endpoint is set up. An administrator checks the endpoint's settings."
+      )
 
   def notice("pictures_not_seen"),
     do:
@@ -192,6 +256,97 @@ defmodule PhoenixKitAgent.Web.Dock.Texts do
       )
 
   def notice(_code_with_its_own_text), do: nil
+
+  @doc """
+  The feed's notice text, including the two fixed model-error texts whose
+  shared error code does not say whether the pictures were taken off the
+  message. Older stored notices are translated too; other text stays as stored.
+  """
+  @spec notice(String.t() | nil, String.t() | nil) :: String.t() | nil
+  def notice(code, content), do: notice(code) || notice_content(content)
+
+  defp notice_content("The model did not answer. Try again."),
+    do: gettext("The model did not answer. Try again.")
+
+  defp notice_content(
+         "The model did not answer; it may not take the pictures. " <>
+           "The files were not sent with the message: you can send them again."
+       ),
+       do:
+         gettext(
+           "The model did not answer; it may not take the pictures. The files were not sent with the message: you can send them again."
+         )
+
+  defp notice_content(content), do: content
+
+  @doc "The heading of a confirmation card in its state."
+  @spec card_title(String.t()) :: String.t()
+  def card_title("waiting"), do: gettext("The assistant proposes a change")
+  def card_title("confirmed"), do: gettext("The change was made")
+  def card_title("rejected"), do: gettext("The change was cancelled")
+  def card_title("expired"), do: gettext("The confirmation ran out; nothing was changed")
+  def card_title("changed"), do: gettext("The data changed — check it again below")
+  def card_title("failed"), do: gettext("The change failed")
+  def card_title(_unavailable), do: gettext("This change can no longer be confirmed here")
+
+  @doc "The line of the notice that settles a confirmation card, by its outcome."
+  @spec card_outcome(String.t()) :: String.t()
+  def card_outcome("confirmed"), do: gettext("Done:")
+  def card_outcome("rejected"), do: gettext("Cancelled:")
+  def card_outcome("expired"), do: gettext("Ran out:")
+  def card_outcome("changed"), do: gettext("The data changed:")
+  def card_outcome(_failed), do: gettext("Failed:")
+
+  @doc """
+  The text for a click on a confirmation card that did nothing (the card keeps
+  waiting): the refusals of `PhoenixKitAgent.Confirmations`, `{:refused,
+  code}` with the executor's code among them.
+  """
+  @spec card_refusal(term()) :: String.t()
+  def card_refusal(:turn_running),
+    do: gettext("The assistant is answering. Try again when it has finished.")
+
+  def card_refusal(:click_running),
+    do: gettext("A change is being confirmed right now. Try again in a moment.")
+
+  def card_refusal(:not_stored),
+    do:
+      gettext(
+        "What became of this change could not be saved in the chat. Open the chat again to see it."
+      )
+
+  def card_refusal(:not_waiting), do: gettext("This change no longer waits for you.")
+
+  def card_refusal(:not_expired),
+    do: gettext("This change can be asked for again only once its confirmation ran out.")
+
+  def card_refusal(:already_waiting),
+    do:
+      gettext(
+        "This change is already waiting for confirmation. Run or cancel its card in the chat."
+      )
+
+  def card_refusal(:no_arguments),
+    do:
+      gettext(
+        "This change cannot be confirmed: the assistant's call is not in the chat any more."
+      )
+
+  def card_refusal({:refused, :module_write_disabled}),
+    do: gettext("The assistant may not make changes in this part of the site now.")
+
+  def card_refusal({:refused, :forbidden}), do: gettext("You may not make this change now.")
+
+  def card_refusal({:refused, :unauthorized}), do: refusal(:session_gone)
+  def card_refusal({:refused, :rate_limited}), do: refusal(:rate_limited)
+
+  def card_refusal({:refused, :validation_failed}),
+    do: gettext("The change does not fit what the tool takes any more.")
+
+  def card_refusal({:refused, _code}),
+    do: gettext("The change cannot be made now. Try again later, or cancel it.")
+
+  def card_refusal(reason), do: refusal(reason)
 
   @doc "The text for an error of a LiveView upload entry."
   @spec upload_error(atom()) :: String.t()

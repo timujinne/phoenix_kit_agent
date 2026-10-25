@@ -272,7 +272,7 @@ defmodule PhoenixKitAgent.UserConfigTest do
 
   describe "admin_update/3" do
     test "writes the fields, records who, and logs the change in Activity", %{user: user} do
-      endpoint = endpoint_fixture()
+      endpoint = declared(%{name: "Tools", model: "a/tools"}, "yes")
       scope = manager_scope()
       manager_uuid = scope.user.uuid
 
@@ -470,6 +470,74 @@ defmodule PhoenixKitAgent.UserConfigTest do
 
       assert UserConfig.effective(user.uuid).daily_turn_limit == 200
     end
+  end
+
+  describe "admin_update/4: the model must fit the agent.chat AI task" do
+    setup do
+      PhoenixKitAI.Guard.reset_caches()
+      on_exit(&PhoenixKitAI.Guard.reset_caches/0)
+      :ok
+    end
+
+    test "a model known to take no tools is refused and nothing is written", %{user: user} do
+      unfit = declared(%{name: "Plain", model: "a/no-tools"}, "no")
+
+      assert {:error, {:model_unfit, [:tools]}} =
+               UserConfig.admin_update(manager_scope(), user.uuid, %{
+                 "endpoint_uuid" => unfit.uuid,
+                 "daily_turn_limit" => "4"
+               })
+
+      assert Repo.get(UserSettings, user.uuid) == nil
+      assert activity("agent.user_settings_updated") == []
+    end
+
+    test "a model nobody knows takes tools is refused and nothing is written", %{user: user} do
+      unknown = endpoint_fixture(%{model: "a/never-heard-of"})
+
+      assert {:error, {:model_unverified, [:tools]}} =
+               UserConfig.admin_update(manager_scope(), user.uuid, %{
+                 "endpoint_uuid" => unknown.uuid
+               })
+
+      assert Repo.get(UserSettings, user.uuid) == nil
+      assert activity("agent.user_settings_updated") == []
+    end
+
+    test "a model that takes tools is saved, and none (the module default) too", %{user: user} do
+      fit = declared(%{name: "Tools", model: "a/tools"}, "yes")
+      scope = manager_scope()
+
+      assert {:ok, %UserSettings{endpoint_uuid: endpoint_uuid}, [:endpoint_uuid]} =
+               UserConfig.admin_update(scope, user.uuid, %{"endpoint_uuid" => fit.uuid})
+
+      assert endpoint_uuid == fit.uuid
+
+      assert {:ok, %UserSettings{endpoint_uuid: nil}, [:endpoint_uuid]} =
+               UserConfig.admin_update(scope, user.uuid, %{"endpoint_uuid" => nil})
+    end
+
+    test "a model kept as it is is not checked again", %{user: user} do
+      unfit = declared(%{name: "Plain", model: "a/no-tools"}, "no")
+      Repo.insert!(%UserSettings{user_uuid: user.uuid, endpoint_uuid: unfit.uuid})
+
+      assert {:ok, _row, [:daily_turn_limit]} =
+               UserConfig.admin_update(manager_scope(), user.uuid, %{
+                 "endpoint_uuid" => unfit.uuid,
+                 "daily_turn_limit" => "4"
+               })
+    end
+  end
+
+  # An endpoint whose model's tools an admin declared.
+  defp declared(attrs, tools) do
+    model = Map.fetch!(attrs, :model)
+
+    endpoint_fixture(
+      Map.put(attrs, :provider_settings, %{
+        "capabilities" => %{"model" => model, "tools" => tools}
+      })
+    )
   end
 
   defp activity(action) do

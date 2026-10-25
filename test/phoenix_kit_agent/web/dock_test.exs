@@ -492,17 +492,25 @@ defmodule PhoenixKitAgent.Web.DockTest do
          ctx do
       {:ok, _} = PhoenixKit.Settings.update_setting("time_zone", "Europe/Tallinn")
       chat = conversation_fixture(ctx.user, %{title: "When"})
-
-      chat
-      |> Ecto.Changeset.change(last_message_at: ~U[2026-07-15 12:00:00.000000Z])
-      |> Repo.update!()
+      moment = at(5 * 86_400 + 60)
+      chat |> Ecto.Changeset.change(last_message_at: moment) |> Repo.update!()
 
       view = dock(ctx, locale: "ru")
       selector = "#pk-agent-chat-time-#{chat.uuid}"
 
+      tallinn =
+        moment
+        |> DateTime.shift_zone!("Europe/Tallinn", Tz.TimeZoneDatabase)
+        |> Calendar.strftime("%Y-%m-%d %H:%M")
+
+      ago =
+        Gettext.with_locale(PhoenixKitAgent.Gettext, "ru", fn ->
+          Gettext.ngettext(PhoenixKitAgent.Gettext, "%{count} day ago", "%{count} days ago", 5)
+        end)
+
       refute has_element?(view, "#{selector}[phx-hook]")
-      assert has_element?(view, "#{selector}[title='2026-07-15 15:00']")
-      assert has_element?(view, selector, "дней назад")
+      assert has_element?(view, "#{selector}[title='#{tallinn}']")
+      assert has_element?(view, selector, ago)
     end
 
     test "renames and archives the user's own chat", ctx do
@@ -1640,6 +1648,84 @@ defmodule PhoenixKitAgent.Web.DockTest do
       assert has_element?(view, "#pk-agent-feed [data-role=notice]", "The answer was interrupted")
       refute render(view) =~ "Stored words"
       assert has_element?(view, "#pk-agent-feed [data-role=notice]", "Words of its own")
+    end
+
+    test "transient errors and rejected pictures keep their guidance in the panel's language",
+         ctx do
+      turn_message!(ctx.chat, %{
+        role: "notice",
+        content: "The model did not answer. Try again.",
+        error: "request_timeout"
+      })
+
+      turn_message!(ctx.chat, %{
+        role: "notice",
+        content:
+          "The model did not answer; it may not take the pictures. " <>
+            "The files were not sent with the message: you can send them again.",
+        error: "api_error"
+      })
+
+      view = dock(ctx, locale: "ru")
+      open_chat(view, ctx.chat)
+
+      assert has_element?(
+               view,
+               "#pk-agent-feed [data-role=notice]",
+               "Модель не ответила. Попробуйте ещё раз."
+             )
+
+      assert has_element?(view, "#pk-agent-feed [data-role=notice]", "Файлы не были отправлены")
+      refute render(view) =~ "The model did not answer"
+    end
+
+    test "an account out of credit is told in the panel's language, never as a retry", ctx do
+      turn_message!(ctx.chat, %{
+        role: "notice",
+        content: "The model did not answer. Try again.",
+        error: "insufficient_credits"
+      })
+
+      view = dock(ctx)
+      open_chat(view, ctx.chat)
+      assert has_element?(view, "#pk-agent-feed [data-role=notice]", "run out of credit")
+      refute render(view) =~ "Try again"
+
+      view = dock(ctx, locale: "ru")
+      open_chat(view, ctx.chat)
+      assert has_element?(view, "#pk-agent-feed [data-role=notice]", "закончились средства")
+      refute render(view) =~ "Try again"
+    end
+
+    test "an endpoint that cannot be used is told in the panel's language, never as a retry",
+         ctx do
+      turn_message!(ctx.chat, %{
+        role: "notice",
+        content: "The model did not answer. Try again.",
+        error: "invalid_api_key"
+      })
+
+      view = dock(ctx)
+      open_chat(view, ctx.chat)
+
+      assert has_element?(
+               view,
+               "#pk-agent-feed [data-role=notice]",
+               "An administrator has to check"
+             )
+
+      refute render(view) =~ "Try again"
+
+      view = dock(ctx, locale: "ru")
+      open_chat(view, ctx.chat)
+
+      assert has_element?(
+               view,
+               "#pk-agent-feed [data-role=notice]",
+               "Администратору нужно проверить"
+             )
+
+      refute render(view) =~ "Try again"
     end
 
     test "a long chat opens at its end; the earlier messages come on request", ctx do

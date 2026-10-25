@@ -371,6 +371,43 @@ defmodule PhoenixKitAgent.ConversationsTest do
   end
 
   describe "adding a message" do
+    test "several turn messages are stored together, in order, or none of them" do
+      %{ref: ref} = member()
+      chat = new_chat!(ref)
+      :ok = Conversations.subscribe(ref, chat.uuid, @me)
+      card_uuid = Ecto.UUID.generate()
+
+      assert {:ok, [notice, card]} =
+               Conversations.add_turn_messages(chat.user_uuid, chat.uuid, [
+                 {%{role: "notice", content: "n", tool_name: "t", tool_outcome: "changed"},
+                  [confirmation_uuid: Ecto.UUID.generate()]},
+                 {%{role: "tool", tool_call_id: "w1", tool_name: "t", tool_outcome: "ok"},
+                  [confirmation_uuid: card_uuid]}
+               ])
+
+      assert card.confirmation_uuid == card_uuid
+      assert DateTime.compare(notice.inserted_at, card.inserted_at) == :lt
+      chat_uuid = chat.uuid
+      notice_uuid = notice.uuid
+      card_message_uuid = card.uuid
+      assert_receive {:agent_message_added, ^chat_uuid, ^notice_uuid}
+      assert_receive {:agent_message_added, ^chat_uuid, ^card_message_uuid}
+      assert Repo.get!(Conversation, chat.uuid).message_count == 2
+
+      # The second is refused: the first is not stored either, and nothing is heard.
+      before = message_count()
+
+      assert {:error, %Ecto.Changeset{}} =
+               Conversations.add_turn_messages(chat.user_uuid, chat.uuid, [
+                 {%{role: "notice", content: "n", tool_name: "t", tool_outcome: "changed"}, []},
+                 {%{role: "no such role"}, []}
+               ])
+
+      assert message_count() == before
+      refute_receive {:agent_message_added, _, _}
+      assert Repo.get!(Conversation, chat.uuid).message_count == 2
+    end
+
     test "stores it and updates the chat's counters and order" do
       %{ref: ref} = member()
       chat = new_chat!(ref)

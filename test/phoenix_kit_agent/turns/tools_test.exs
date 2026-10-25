@@ -34,24 +34,18 @@ defmodule PhoenixKitAgent.Turns.ToolsTest do
   end
 
   describe "for_model/1" do
-    test "only read-only tools are shown, whatever the list it is given" do
+    test "every tool core lists is shown, writes too: the module filters nothing" do
       read = tool("agenttest.list_items", %{read_only: true})
       write = tool("agenttest.write_item", %{read_only: false})
-      unmarked = tool("agenttest.touch_item", %{})
 
-      # Core's `visible_for(..., allow: :read)` already leaves write tools
-      # out; this is the second line if it ever did not.
-      {definitions, by_name} = Tools.for_model([write, read, unmarked])
+      {definitions, by_name} = Tools.for_model([write, read])
 
-      assert Enum.map(definitions, & &1["function"]["name"]) == ["agenttest_list_items"]
-      assert by_name == %{"agenttest_list_items" => read}
-    end
+      assert Enum.map(definitions, & &1["function"]["name"]) == [
+               "agenttest_write_item",
+               "agenttest_list_items"
+             ]
 
-    test "a write tool does not shadow a read tool of the same model name" do
-      write = tool("agenttest.a_b", %{read_only: false})
-      read = tool("agenttest_a.b", %{read_only: true})
-
-      assert {[_], %{"agenttest_a_b" => ^read}} = Tools.for_model([write, read])
+      assert by_name == %{"agenttest_list_items" => read, "agenttest_write_item" => write}
     end
 
     test "a read tool's schema is shown as core gives it, without control fields" do
@@ -95,6 +89,29 @@ defmodule PhoenixKitAgent.Turns.ToolsTest do
       for bad <- ["nope", "[1,2]", "3", nil, 42] do
         assert Tools.arguments(bad) == :error
       end
+    end
+  end
+
+  describe "held/1" do
+    test "the uuid of core's prompt for a session's write, nothing else" do
+      uuid = Ecto.UUID.generate()
+
+      assert Tools.held(%{
+               "executed" => false,
+               "status" => "confirmation_required",
+               "confirmation_id" => uuid,
+               "preview" => %{}
+             }) == {:ok, uuid}
+
+      assert Tools.held(%{"status" => "confirmation_required", "confirmation_id" => uuid}) ==
+               :error
+
+      assert Tools.held(%{"executed" => true}) == :error
+
+      assert Tools.held_result(uuid) == %{
+               "status" => "confirmation_required",
+               "confirmation_id" => uuid
+             }
     end
   end
 

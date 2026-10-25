@@ -88,26 +88,18 @@ defmodule PhoenixKitAgent.MixProject do
   defp deps do
     [
       # PhoenixKit provides the Module behaviour, the Settings API, the API
-      # Executor (execute_as/visible_for), SessionRef and hidden Storage
-      # libraries.
-      # Pinned to upstream main 435d5b3, which carries #948, #949 and #950
-      # (merged). Hex 2.63.0 does not carry these functions; switch back to a
-      # Hex requirement once a release ships them.
-      pk_dep(:phoenix_kit,
-        git: "https://github.com/BeamLabEU/phoenix_kit.git",
-        ref: "435d5b3275fe208e5674f337b91479f603e4f0df",
-        override: true
-      ),
+      # Executor (execute_as/visible_for, the writes of a live session:
+      # allow: :all, redeem_as/6, tool_availability/1), API.Confirm, the
+      # OperationPreview component, SessionRef and hidden Storage libraries.
+      # 2.64 is the first release with the AI journal's cost in dollars (V223).
+      pk_dep(:phoenix_kit, "~> 2.64"),
 
       # Model calls, endpoints, credentials, budget and the request journal
-      # come from phoenix_kit_ai; this module only adds the chat layer.
-      # Integration pin until release: the fork's integration branch
-      # (upstream + #38, tool calling).
-      pk_dep(:phoenix_kit_ai,
-        git: "https://github.com/timujinne/phoenix_kit_ai.git",
-        ref: "06cc9ff9c8030e73bac47748cb07350617aa14f6",
-        override: true
-      ),
+      # come from phoenix_kit_ai; this module only adds the chat layer: the AI
+      # task guard (tasks, capabilities, admission, blocks, off-purpose flags),
+      # tool calling and a call's cost from one place (PhoenixKitAI.CallCost),
+      # with Request.cost in dollars from 0.26.
+      pk_dep(:phoenix_kit_ai, "~> 0.26"),
 
       # LiveView is needed for the admin pages (Phase 1).
       {:phoenix_live_view, "~> 1.1"},
@@ -147,7 +139,7 @@ defmodule PhoenixKitAgent.MixProject do
     [
       licenses: ["MIT"],
       links: %{"GitHub" => @source_url},
-      files: ~w(lib priv .formatter.exs mix.exs README.md LICENSE)
+      files: ~w(lib priv .formatter.exs mix.exs README.md CHANGELOG.md LICENSE)
     ]
   end
 

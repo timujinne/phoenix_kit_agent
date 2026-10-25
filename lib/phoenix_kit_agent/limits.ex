@@ -16,10 +16,13 @@ defmodule PhoenixKitAgent.Limits do
   limits in force are `PhoenixKitAgent.UserConfig.effective/1`'s: the
   user's own, else the module's. A limit of `0` allows nothing.
 
-  The money limits apply only on an endpoint that reports what a call cost
-  (`PhoenixKitAgent.Models.reports_cost?/1`, today OpenRouter): on another,
+  The money limits apply only on an endpoint whose calls get what they cost
+  in the journal (`PhoenixKitAgent.Models.reports_cost?/2`: a model call of a
+  turn, or a picture's description on the vision endpoint, where the provider
+  reports a cost or `phoenix_kit_ai` has a price for the model): on another,
   nothing would be counted, so only the turn limit applies there — the admin
-  pages say so. An endpoint that cannot be found keeps the money limits.
+  pages say so for the default model. An endpoint that cannot be found keeps
+  the money limits.
 
   ## When
 
@@ -48,8 +51,11 @@ defmodule PhoenixKitAgent.Limits do
       the watchers' period key is `w:<period>`, written only when they are
       told — so `notify_on_limit` switched on later in the period still
       tells the watchers of that period, once.
-    * The `phoenix_kit_ai` budget used up (`ai_budget_reached/2`) — the
-      watchers, at most once a day per user (event kind `ai_budget`).
+
+  A call refused by the `phoenix_kit_ai` budget is signalled by
+  `phoenix_kit_ai` itself (its `limit_reached` event, to its watchers and
+  to those of the task, `guard_watchers/1`); the turn's notice in the chat
+  says the budget is used up.
 
   The watchers are `agent_limit_watchers` (empty: every Owner) and the user's
   own `notify_user_uuids`, without the user, who is told as the user.
@@ -118,11 +124,16 @@ defmodule PhoenixKitAgent.Limits do
   turns. On `:ok`, a limit at 80 % or more is announced to the user (once per
   period). Sends nothing about a limit reached: that is
   `announce_reached/2`.
+
+  Options: `:use` — what the call on the endpoint is (`:chat`, the default,
+  or `:vision`, see `money_counted?/2`); `:now`.
   """
-  @spec check(UserConfig.effective(), String.t() | nil, DateTime.t()) ::
+  @spec check(UserConfig.effective(), String.t() | nil, keyword()) ::
           :ok | {:error, {:limit_reached, status()}}
-  def check(settings, endpoint_uuid, now \\ DateTime.utc_now()) do
-    statuses = statuses(settings, usage(settings.user_uuid, now), money_counted?(endpoint_uuid))
+  def check(settings, endpoint_uuid, opts \\ []) do
+    now = Keyword.get_lazy(opts, :now, &DateTime.utc_now/0)
+    money? = money_counted?(endpoint_uuid, Keyword.get(opts, :use, :chat))
+    statuses = statuses(settings, usage(settings.user_uuid, now), money?)
 
     case Enum.find(statuses, &(&1.used >= &1.limit)) do
       nil ->
@@ -166,19 +177,6 @@ defmodule PhoenixKitAgent.Limits do
   end
 
   @doc """
-  Tells the watchers that the `phoenix_kit_ai` budget refused a call of the
-  user's assistant (`scope` is the budget's), at most once a day per user.
-  """
-  @spec ai_budget_reached(String.t(), term(), DateTime.t()) :: :ok
-  def ai_budget_reached(user_uuid, scope, now \\ DateTime.utc_now()) do
-    safely(fn ->
-      if first?(user_uuid, "ai_budget", Spend.period_keys(now).day, nil, nil) do
-        tell_watchers(user_uuid, &budget_text(&1, scope))
-      end
-    end)
-  end
-
-  @doc """
   Who is told about the user's limits: `agent_limit_watchers` (empty: every
   Owner) and the user's own `notify_user_uuids`, without the user.
   """
@@ -199,18 +197,45 @@ defmodule PhoenixKitAgent.Limits do
   end
 
   @doc """
-  Whether money counts on `endpoint_uuid` (see the moduledoc): an endpoint
-  that reports a cost, or one that cannot be found.
+  The watchers the module adds to the AI guard's own for its tasks
+  (`watchers` of `PhoenixKitAgent.ai_tasks/0`, called with the user's uuid
+  or nil): `agent_limit_watchers`, plus the user's `notify_user_uuids` when
+  their `notify_on_limit` is on, without the user. An empty
+  `agent_limit_watchers` adds nobody: the guard tells its own watchers
+  (every Owner by default) anyway.
   """
-  @spec money_counted?(String.t() | nil) :: boolean()
-  def money_counted?(endpoint_uuid) when is_binary(endpoint_uuid) do
+  @spec guard_watchers(String.t() | nil) :: [String.t()]
+  def guard_watchers(user_uuid) when is_binary(user_uuid) do
+    own =
+      from(s in UserSettings,
+        where: s.user_uuid == ^user_uuid and s.notify_on_limit == true,
+        select: s.notify_user_uuids
+      )
+      |> repo().one()
+      |> List.wrap()
+
+    (Config.limit_watchers() ++ own) |> Enum.uniq() |> List.delete(user_uuid)
+  end
+
+  def guard_watchers(_no_user), do: Config.limit_watchers()
+
+  @doc """
+  Whether money counts for a `call` (`:chat` or `:vision`) on
+  `endpoint_uuid` (see the moduledoc): an endpoint whose such calls get a
+  cost (`PhoenixKitAgent.Models.reports_cost?/2`), or one that cannot be
+  found.
+  """
+  @spec money_counted?(String.t() | nil, Models.call_kind()) :: boolean()
+  def money_counted?(endpoint_uuid, call \\ :chat)
+
+  def money_counted?(endpoint_uuid, call) when is_binary(endpoint_uuid) do
     case PhoenixKitAI.get_endpoint(endpoint_uuid) do
       nil -> true
-      endpoint -> Models.reports_cost?(endpoint)
+      endpoint -> Models.reports_cost?(endpoint, call)
     end
   end
 
-  def money_counted?(_none), do: true
+  def money_counted?(_none, _call), do: true
 
   # ── internals ─────────────────────────────────────────────────────────
 
@@ -393,40 +418,6 @@ defmodule PhoenixKitAgent.Limits do
           email: email,
           limit: Spend.format_usd(limit)
         )
-      end)
-
-  defp budget_text(email, :global),
-    do:
-      for_watchers(fn ->
-        gettext("The overall AI budget refused the AI assistant of %{email}.", email: email)
-      end)
-
-  defp budget_text(email, :endpoint),
-    do:
-      for_watchers(fn ->
-        gettext("The AI budget of the endpoint refused the AI assistant of %{email}.",
-          email: email
-        )
-      end)
-
-  defp budget_text(email, :user),
-    do:
-      for_watchers(fn ->
-        gettext("The AI budget of the user refused the AI assistant of %{email}.", email: email)
-      end)
-
-  defp budget_text(email, :user_calls),
-    do:
-      for_watchers(fn ->
-        gettext("The AI call limit of the user refused the AI assistant of %{email}.",
-          email: email
-        )
-      end)
-
-  defp budget_text(email, _other),
-    do:
-      for_watchers(fn ->
-        gettext("The AI budget refused the AI assistant of %{email}.", email: email)
       end)
 
   # A notice is never worth a turn: a failure is logged as its class only.

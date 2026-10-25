@@ -64,7 +64,7 @@ defmodule PhoenixKitAgent.SchemasTest do
   end
 
   describe "Message" do
-    test "role is user, assistant, tool or notice; outcome is one of the six", %{
+    test "role is user, assistant, tool or notice; outcome is one of the nine", %{
       conversation: conversation
     } do
       base = %Message{conversation_uuid: conversation.uuid}
@@ -75,7 +75,8 @@ defmodule PhoenixKitAgent.SchemasTest do
       assert %{tool_outcome: [_]} =
                errors_on(Message.changeset(base, %{role: "tool", tool_outcome: "maybe"}))
 
-      for outcome <- ~w(ok error denied needs_confirmation confirmed rejected) do
+      for outcome <-
+            ~w(ok error denied needs_confirmation confirmed rejected expired changed failed) do
         assert Message.changeset(base, %{role: "tool", tool_outcome: outcome}).valid?
       end
     end
