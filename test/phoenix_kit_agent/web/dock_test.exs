@@ -1371,6 +1371,41 @@ defmodule PhoenixKitAgent.Web.DockTest do
       assert attachments_of(ctx.chat) == []
     end
 
+    test "a picture of an unlisted image type is taken in by the image/* wildcard", ctx do
+      view = dock(ctx)
+      open_chat(view, ctx.chat)
+
+      upload(view, "IMG_20261029_101500", Files.jpeg(64, 48), "image/x-camera-raw")
+
+      # Accepted by LiveView: what stops it is the content check, not the list.
+      assert await_files(view) =~ "no model that sees images"
+      refute render(view) =~ "pk-agent-upload-error"
+    end
+
+    test "a file LiveView refuses is shown and logged by its class only", ctx do
+      view = dock(ctx)
+      open_chat(view, ctx.chat)
+
+      {result, logs} =
+        LogProbe.capture(fn ->
+          input =
+            file_input(view, "#pk-agent-composer", :files, [
+              %{name: "SecretName.exe", content: "MZ", type: "application/octet-stream"}
+            ])
+
+          result = render_upload(input, "SecretName.exe")
+          assert render(view) =~ "text-error"
+          # The browser's change event that follows a file pick.
+          view |> form("#pk-agent-composer") |> render_change()
+          result
+        end)
+
+      assert {:error, [[_ref, :not_accepted]]} = result
+      assert Enum.any?(logs, &(&1 =~ "[PhoenixKitAgent] an upload was refused: :not_accepted"))
+      refute Enum.any?(logs, &(&1 =~ "SecretName"))
+      assert attachments_of(ctx.chat) == []
+    end
+
     test "a cancel of an upload that is not there changes nothing", ctx do
       view = dock(ctx)
       open_chat(view, ctx.chat)

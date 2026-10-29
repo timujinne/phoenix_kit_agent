@@ -273,11 +273,21 @@ defmodule PhoenixKitAgent.Attachments do
     with {:ok, folder} <- Library.ensure_user_folder(attachment.user_uuid),
          {:ok, checksum} <- FileHash.sha256(source.path) do
       case put_file(attachment, source, detected, folder, checksum) do
-        {:ok, file} -> link(attachment, file, folder)
-        {:error, stored_uuid} -> abandon(attachment, stored_uuid)
+        {:ok, file} ->
+          link(attachment, file, folder)
+
+        {:error, stored_uuid} ->
+          log_not_stored(:bucket)
+          abandon(attachment, stored_uuid)
       end
     else
-      _failed -> abandon(attachment, nil)
+      {:error, %Ecto.Changeset{}} ->
+        log_not_stored(:library)
+        abandon(attachment, nil)
+
+      _failed ->
+        log_not_stored(:folder_or_checksum)
+        abandon(attachment, nil)
     end
   rescue
     exception ->
@@ -293,7 +303,9 @@ defmodule PhoenixKitAgent.Attachments do
          {1, _} <- link_file(attachment, file) do
       {:ok, %{attachment | file_uuid: file.uuid}}
     else
-      _failed -> abandon(attachment, file.uuid)
+      _failed ->
+        log_not_stored(:link)
+        abandon(attachment, file.uuid)
     end
   rescue
     exception ->
@@ -303,6 +315,10 @@ defmodule PhoenixKitAgent.Attachments do
 
       abandon(attachment, file.uuid)
   end
+
+  # The stage only: never the file, its name or the user.
+  defp log_not_stored(stage),
+    do: Logger.warning("[PhoenixKitAgent] an attachment was not stored: #{stage}")
 
   defp abandon(attachment, file_uuid) do
     remove_row(attachment)

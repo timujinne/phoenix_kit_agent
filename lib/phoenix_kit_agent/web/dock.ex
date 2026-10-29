@@ -156,7 +156,12 @@ defmodule PhoenixKitAgent.Web.Dock do
   alias PhoenixKitAgent.Web.Dock.{Panel, Texts}
   alias PhoenixKitWeb.Users.MultiSession
 
-  @accept ~w(.png .jpg .jpeg .webp .heic .heif .pdf .xlsx .csv .txt .md)
+  # `image/*` next to the extensions: a camera picture reaches the browser by
+  # its MIME type, and its name may carry no listed extension. What the file
+  # really is is told by its content (`Attachments.add/4`), not by this list.
+  @accept ~w(image/* .png .jpg .jpeg .webp .heic .heif .pdf .xlsx .csv .txt .md)
+  # A slow tablet link needs more than LiveView's 10 s between two chunks.
+  @chunk_timeout_ms 60_000
   @mb 1_048_576
   # How many messages a chat opens with, and how many more "Earlier" brings.
   @messages_page 50
@@ -224,6 +229,7 @@ defmodule PhoenixKitAgent.Web.Dock do
         max_entries: max(settings.max_attachments_per_message, 1),
         max_file_size: max(settings.max_attachment_mb * @mb, 1),
         auto_upload: true,
+        chunk_timeout: @chunk_timeout_ms,
         progress: &handle_progress/3
       )
       |> stream_configure(:messages, dom_id: &"pk-agent-msg-#{&1.uuid}")
@@ -410,7 +416,10 @@ defmodule PhoenixKitAgent.Web.Dock do
     end
   end
 
-  defp event("composer_change", _params, socket), do: {:noreply, socket}
+  defp event("composer_change", _params, socket) do
+    log_upload_errors(socket)
+    {:noreply, socket}
+  end
 
   defp event("send", %{"message" => params}, socket) when is_map(params) do
     case sync_turn(socket) do
@@ -881,6 +890,23 @@ defmodule PhoenixKitAgent.Web.Dock do
 
   defp progress(:files, _entry, socket), do: {:noreply, socket}
 
+  # What LiveView refused (too large, not accepted, too many, a failed
+  # transfer) is only on the screen otherwise: the error class is logged, never
+  # the file or its name.
+  defp log_upload_errors(socket) do
+    upload = socket.assigns.uploads.files
+
+    for entry <- upload.entries, error <- upload_errors(upload, entry) do
+      Logger.warning("[PhoenixKitAgent] an upload was refused: #{inspect(error)}")
+    end
+
+    for error <- upload_errors(upload) do
+      Logger.warning("[PhoenixKitAgent] an upload was refused: #{inspect(error)}")
+    end
+
+    :ok
+  end
+
   # An exception in `add/4` would end the async task with a crash report that
   # holds its terms (a file name, a changeset): only its class is logged.
   defp safe_add(ref, uuid, upload, opts) do
@@ -914,12 +940,18 @@ defmodule PhoenixKitAgent.Web.Dock do
          socket |> assign(error: nil, fresh_uuid: nil) |> refresh_attachment(attachment.uuid)}
 
       {:ok, {:error, reason}} ->
+        Logger.warning("[PhoenixKitAgent] a file was not added: #{reason_class(reason)}")
         {:noreply, socket |> refused(reason) |> drop_fresh(entry_ref)}
 
       {:exit, _reason} ->
+        Logger.warning("[PhoenixKitAgent] a file was not added: its task ended")
+
         {:noreply, socket |> refused(:storage_unavailable) |> drop_fresh(entry_ref)}
     end
   end
+
+  defp reason_class(reason) when is_atom(reason), do: reason
+  defp reason_class(_reason), do: :other
 
   # The upload is done with: its temporary file goes.
   defp drop_entry(socket, entry_ref) do

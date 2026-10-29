@@ -225,6 +225,40 @@ defmodule PhoenixKitAgent.AttachmentsTest do
       assert {:error, :empty_file} = add(ctx, "", "empty.txt")
     end
 
+    test "the very first picture on a fresh site creates the hidden library and gets ready",
+         ctx do
+      serve_ai()
+      assert Library.library() == nil
+      assert Library.user_folder(ctx.user.uuid) == nil
+
+      jpeg = Files.with_metadata(Files.jpeg(64, 48), "Apple", "camera")
+      assert {:ok, attachment} = add(ctx, jpeg, "IMG_0001.JPG")
+      assert attachment.kind == "image"
+      assert attachment.content_type == "image/jpeg"
+      assert %{status: "ready"} = await_done(attachment)
+
+      assert %Storage.File{} = storage_file(attachment)
+      assert %{slug: "phoenix-kit-agent"} = Library.library()
+      assert Library.user_folder(ctx.user.uuid)
+    end
+
+    test "a file whose library cannot be made is refused, and the refusal is logged", ctx do
+      serve_ai()
+      # The library's name is taken by another system library: it cannot be created.
+      {:ok, _} =
+        Libraries.create_system_library(%{
+          "name" => "PhoenixKit Agent attachments",
+          "slug" => "somebody-else"
+        })
+
+      {result, logs} = LogProbe.capture(fn -> add(ctx, Files.jpeg(32, 32), "secret-name.jpg") end)
+
+      assert {:error, :storage_unavailable} = result
+      assert Enum.any?(logs, &(&1 =~ "[PhoenixKitAgent] an attachment was not stored"))
+      refute Enum.any?(logs, &(&1 =~ "secret-name"))
+      assert Repo.aggregate(Attachment, :count) == 0
+    end
+
     test "webp and heic are accepted by their first bytes", ctx do
       serve_ai()
       webp = "RIFF" <> <<12::little-32>> <> "WEBP" <> :binary.copy(<<0>>, 32)

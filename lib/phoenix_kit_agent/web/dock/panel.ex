@@ -465,17 +465,34 @@ defmodule PhoenixKitAgent.Web.Dock.Panel do
       {
         mounted() {
           this.stick = true
-          this.el.scrollTop = this.el.scrollHeight
+          this.scrollToEnd = () => { this.el.scrollTop = this.el.scrollHeight }
+          this.scrollToEnd()
+          requestAnimationFrame(this.scrollToEnd)
           this.el.addEventListener("scroll", () => {
+            // A hidden panel (display: none) reports 0 and must not drop the flag.
+            if (this.el.clientHeight === 0) return
             this.stick = this.el.scrollHeight - this.el.scrollTop - this.el.clientHeight < 48
           })
           this.observer = new MutationObserver(() => {
-            if (this.stick) this.el.scrollTop = this.el.scrollHeight
+            if (this.stick) this.scrollToEnd()
           })
           this.observer.observe(this.el, {childList: true, subtree: true})
+          // Fires when the panel is shown again or the sticky view is re-attached
+          // after a live navigation (the browser resets scrollTop then).
+          this.resizer = new ResizeObserver(() => {
+            if (this.stick) this.scrollToEnd()
+          })
+          this.resizer.observe(this.el)
+        },
+        updated() {
+          if (this.stick) this.scrollToEnd()
+        },
+        reconnected() {
+          if (this.stick) this.scrollToEnd()
         },
         destroyed() {
           if (this.observer) this.observer.disconnect()
+          if (this.resizer) this.resizer.disconnect()
         }
       }
     </script>
