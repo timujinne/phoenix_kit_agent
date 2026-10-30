@@ -857,6 +857,39 @@ defmodule PhoenixKitAgent.ConfirmationsTest do
     end
   end
 
+  describe "the numbers of a confirmed write" do
+    test "a summary with ok and failed is kept as two integers and told in the next turn",
+         ctx do
+      card = card!(ctx, %{"name" => "batch"})
+      assert {:ok, :confirmed} = confirm(ctx, card)
+
+      assert [notice] = outcome_notices(ctx.chat)
+      assert notice.tool_result == %{"ok" => 7, "failed" => 3}
+      refute inspect(notice) =~ "FREE-TEXT-MARKER"
+
+      answer_next(text_answer("Noted."))
+      run_turn(ctx, "How did it go?")
+      assert_received {:model_request, body}
+
+      contents = Enum.map(body["messages"], & &1["content"])
+
+      assert "[confirmation] done: agenttest_write_item (7 of 10 succeeded, 3 failed)" in contents
+      refute inspect(body) =~ "FREE-TEXT-MARKER"
+    end
+
+    test "a result with no summary reads as before", ctx do
+      card = card!(ctx)
+      assert {:ok, :confirmed} = confirm(ctx, card)
+      assert [%Message{tool_result: nil}] = outcome_notices(ctx.chat)
+
+      answer_next(text_answer("Noted."))
+      run_turn(ctx, "And?")
+      assert_received {:model_request, body}
+      contents = Enum.map(body["messages"], & &1["content"])
+      assert "[confirmation] done: agenttest_write_item" in contents
+    end
+  end
+
   describe "reject/5" do
     test "turns it down: rejected, nothing written, and it cannot be confirmed after", ctx do
       card = card!(ctx)

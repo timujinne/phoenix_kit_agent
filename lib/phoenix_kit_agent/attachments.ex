@@ -400,6 +400,39 @@ defmodule PhoenixKitAgent.Attachments do
   end
 
   @doc """
+  The user's latest `ready` attachment of the Storage file `file_uuid`, in a
+  chat that is not deleted: `{:ok, %{filename: name_the_user_gave,
+  attachment_uuid: uuid}}`, or `:error` when there is none — the file is not
+  the user's, it is not ready, its chat is deleted, or `file_uuid` is not a
+  uuid. For a host that copies a chat attachment by its Storage uuid: it is
+  how it checks the file is the user's own and names the copy. It acts for
+  the user uuid it is given and checks no session: the caller has done that.
+  """
+  @spec file_for_user(term(), term()) ::
+          {:ok, %{filename: String.t(), attachment_uuid: Ecto.UUID.t()}} | :error
+  def file_for_user(user_uuid, file_uuid) do
+    with {:ok, user_uuid} <- Ecto.UUID.cast(user_uuid),
+         {:ok, file_uuid} <- Ecto.UUID.cast(file_uuid),
+         %{} = found <-
+           repo().one(
+             from(a in Attachment,
+               join: c in Conversation,
+               on: c.uuid == a.conversation_uuid,
+               where:
+                 a.user_uuid == ^user_uuid and a.file_uuid == ^file_uuid and
+                   a.status == "ready" and c.status != "deleted",
+               order_by: [desc: a.inserted_at, desc: a.uuid],
+               limit: 1,
+               select: %{filename: a.filename, attachment_uuid: a.uuid}
+             )
+           ) do
+      {:ok, found}
+    else
+      _none -> :error
+    end
+  end
+
+  @doc """
   The files of the chat that wait for a message, oldest first, whatever their
   status (a failed one is there to be seen and discarded).
   """

@@ -2069,6 +2069,73 @@ defmodule PhoenixKitAgent.AttachmentsTest do
     end
   end
 
+  describe "the Storage file in the history" do
+    test "a ready attachment names its file and filename in every later turn", ctx do
+      serve_ai()
+      file = add_done!(ctx, "Sofa 3 pcs", "notes.txt")
+      assert is_binary(file.file_uuid)
+
+      {:ok, turn_ref} = Turns.start(ctx.ref, false, ctx.chat.uuid, "Read it", [file.uuid])
+      await_turn(ctx, turn_ref)
+      {:ok, turn_ref} = Turns.start(ctx.ref, false, ctx.chat.uuid, "And now?", [])
+      await_turn(ctx, turn_ref)
+
+      assert_received {:model_request, first}
+      assert_received {:model_request, second}
+
+      for body <- [first, second] do
+        assert [%{"content" => content} | _] = chat_messages(body)
+        assert content =~ "[Attachment: notes.txt] (file_uuid: #{file.file_uuid})"
+      end
+    end
+  end
+
+  describe "file_for_user/2" do
+    test "the user's ready attachment of the file, by its name", ctx do
+      file = add_done!(ctx, "Sofa 3 pcs", "notes.txt")
+
+      assert {:ok, %{filename: "notes.txt", attachment_uuid: uuid}} =
+               Attachments.file_for_user(ctx.user.uuid, file.file_uuid)
+
+      assert uuid == file.uuid
+    end
+
+    test "the same bytes added twice: the latest row", ctx do
+      first = add_done!(ctx, "Sofa 3 pcs", "first.txt")
+      second = add_done!(ctx, "Sofa 3 pcs", "second.txt")
+      assert first.file_uuid == second.file_uuid
+
+      assert {:ok, %{filename: "second.txt"}} =
+               Attachments.file_for_user(ctx.user.uuid, first.file_uuid)
+    end
+
+    test "another user's file is :error", ctx do
+      file = add_done!(ctx, "Sofa 3 pcs", "notes.txt")
+      other = user_fixture("other")
+
+      assert Attachments.file_for_user(other.uuid, file.file_uuid) == :error
+    end
+
+    test "a deleted chat is :error", ctx do
+      file = add_done!(ctx, "Sofa 3 pcs", "notes.txt")
+      assert {:ok, _} = Conversations.delete_conversation(ctx.ref, ctx.chat.uuid, @me)
+
+      assert Attachments.file_for_user(ctx.user.uuid, file.file_uuid) == :error
+    end
+
+    test "a row that is not ready is :error, and so is a thing that is no uuid", ctx do
+      file = add_done!(ctx, "Sofa 3 pcs", "notes.txt")
+
+      Repo.update_all(from(a in Attachment, where: a.uuid == ^file.uuid),
+        set: [status: "failed"]
+      )
+
+      assert Attachments.file_for_user(ctx.user.uuid, file.file_uuid) == :error
+      assert Attachments.file_for_user(ctx.user.uuid, "nope") == :error
+      assert Attachments.file_for_user(nil, nil) == :error
+    end
+  end
+
   defp journal_row_of_last_answer(ctx) do
     answer =
       Repo.one!(

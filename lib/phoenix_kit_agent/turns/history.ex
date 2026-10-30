@@ -68,7 +68,11 @@ defmodule PhoenixKitAgent.Turns.History do
   """
   @spec user_content(String.t(), [Attachment.t()], pos_integer()) :: String.t()
   def user_content(text, attachments, limit) do
-    share = div(limit, max(Enum.count(attachments, &is_binary(&1.extracted_text)), 1))
+    # The lines that name the files are not part of any share.
+    named = attachments |> Enum.map(&String.length(file_ref(&1))) |> Enum.sum()
+
+    share =
+      div(max(limit - named, 0), max(Enum.count(attachments, &is_binary(&1.extracted_text)), 1))
 
     Enum.reduce(attachments, text, fn attachment, acc ->
       acc <> attachment_block(attachment, share)
@@ -91,14 +95,23 @@ defmodule PhoenixKitAgent.Turns.History do
           text
       end
 
-    "\n\n[Attachment: " <> filename <> "]\n" <> shown
+    "\n\n[Attachment: " <> filename <> "]" <> file_ref(attachment) <> "\n" <> shown
   end
 
   defp attachment_block(%{filename: filename} = attachment, _share) do
     if Attachments.pixels?(attachment),
-      do: "\n\n[Attachment: " <> filename <> " - " <> pixels_line(attachment) <> "]",
+      do:
+        "\n\n[Attachment: " <>
+          filename <> " - " <> pixels_line(attachment) <> "]" <> file_ref(attachment),
       else: ""
   end
+
+  # The Storage file a tool can be given in place of the attachment; only a
+  # ready attachment names one.
+  defp file_ref(%{status: "ready", file_uuid: uuid}) when is_binary(uuid),
+    do: " (file_uuid: " <> uuid <> ")"
+
+  defp file_ref(_attachment), do: ""
 
   defp pixels_line(%{kind: "pdf", pages: pages}) when is_integer(pages) do
     "a scanned document of #{Extract.count(pages, "page")}; its first #{min(pages, Bounds.get(:scan_pages))} " <>
@@ -126,7 +139,8 @@ defmodule PhoenixKitAgent.Turns.History do
            role: "notice",
            confirmation_uuid: uuid,
            tool_outcome: outcome,
-           tool_name: tool
+           tool_name: tool,
+           tool_result: counts
          },
          _attachments,
          _limit
@@ -134,7 +148,7 @@ defmodule PhoenixKitAgent.Turns.History do
        when is_binary(uuid) and is_binary(tool) do
     case confirmation_phrase(outcome, Names.to_mcp(tool)) do
       nil -> []
-      phrase -> [%{role: "user", content: phrase}]
+      phrase -> [%{role: "user", content: phrase <> counts_phrase(outcome, counts)}]
     end
   end
 
@@ -153,6 +167,20 @@ defmodule PhoenixKitAgent.Turns.History do
        do: [%{role: "user", content: confirmation_phrase("waiting", Names.to_mcp(tool))}]
 
   defp entry(_tool_call_tool_result_or_notice, _attachments, _limit), do: []
+
+  # What a confirmed write counted (`Confirmations` keeps the two integers of
+  # the tool's `summary`, nothing else of its result).
+  defp counts_phrase("confirmed", %{"ok" => ok, "failed" => failed})
+       when is_integer(ok) and is_integer(failed) and ok >= 0 and failed >= 0,
+       do:
+         " (" <>
+           gettext("%{ok} of %{total} succeeded, %{failed} failed",
+             ok: ok,
+             total: ok + failed,
+             failed: failed
+           ) <> ")"
+
+  defp counts_phrase(_outcome, _counts), do: ""
 
   defp card?(%Message{role: "tool", tool_outcome: "needs_confirmation", confirmation_uuid: uuid}),
     do: is_binary(uuid)

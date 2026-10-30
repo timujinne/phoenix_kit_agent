@@ -26,7 +26,9 @@ defmodule PhoenixKitAgent.Test.Tools do
   in between is "the data changed under the preview". While the setting
   `agenttest_locked` is `"yes"` a dry run is refused (as a handler refuses
   what it may not do now, the item being edited by someone else); a real run
-  of the name `"fail"` fails, after the confirmation is spent.
+  of the name `"fail"` fails, after the confirmation is spent; one of the name
+  `"batch"` answers with a `summary` of `ok: 7, failed: 3` (and a free-text
+  `note`).
   """
 
   alias PhoenixKit.API.Tool
@@ -79,6 +81,15 @@ defmodule PhoenixKitAgent.Test.Tools do
     case input do
       %{"name" => "fail"} ->
         {:error, :conflict, "The item could not be written.", %{}}
+
+      %{"name" => "batch"} ->
+        {:ok, _} = PhoenixKit.Settings.update_setting("agenttest_written", "batch")
+
+        {:ok,
+         %{
+           "written" => true,
+           "summary" => %{"ok" => 7, "failed" => 3, "note" => "FREE-TEXT-MARKER"}
+         }}
 
       _ ->
         {:ok, _} = PhoenixKit.Settings.update_setting("agenttest_written", input["name"] || "yes")
