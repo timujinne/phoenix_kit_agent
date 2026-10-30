@@ -407,6 +407,8 @@ defmodule PhoenixKitAgent.Attachments do
   uuid. For a host that copies a chat attachment by its Storage uuid: it is
   how it checks the file is the user's own and names the copy. It acts for
   the user uuid it is given and checks no session: the caller has done that.
+  A uuid in the model's text is not proof of ownership: the host checks it
+  with this function.
   """
   @spec file_for_user(term(), term()) ::
           {:ok, %{filename: String.t(), attachment_uuid: Ecto.UUID.t()}} | :error

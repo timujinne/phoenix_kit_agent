@@ -1109,27 +1109,27 @@ msgstr[2] "%{count} хвилин тому"
 msgid "just now"
 msgstr "щойно"
 
-#: lib/phoenix_kit_agent/turns/history.ex:211
+#: lib/phoenix_kit_agent/turns/history.ex:214
 #, elixir-autogen, elixir-format
 msgid "[confirmation] cancelled: %{action}"
 msgstr "[підтвердження] скасовано: %{action}"
 
-#: lib/phoenix_kit_agent/turns/history.ex:208
+#: lib/phoenix_kit_agent/turns/history.ex:211
 #, elixir-autogen, elixir-format
 msgid "[confirmation] done: %{action}"
 msgstr "[підтвердження] виконано: %{action}"
 
-#: lib/phoenix_kit_agent/turns/history.ex:214
+#: lib/phoenix_kit_agent/turns/history.ex:217
 #, elixir-autogen, elixir-format
 msgid "[confirmation] expired, nothing was done: %{action}"
 msgstr "[підтвердження] термін минув, нічого не зроблено: %{action}"
 
-#: lib/phoenix_kit_agent/turns/history.ex:223
+#: lib/phoenix_kit_agent/turns/history.ex:226
 #, elixir-autogen, elixir-format
 msgid "[confirmation] failed: %{action}"
 msgstr "[підтвердження] не вдалося: %{action}"
 
-#: lib/phoenix_kit_agent/turns/history.ex:218
+#: lib/phoenix_kit_agent/turns/history.ex:221
 #, elixir-autogen, elixir-format
 msgid "[confirmation] the data changed, a new confirmation waits: %{action}"
 msgstr "[підтвердження] дані змінилися, чекає нове підтвердження: %{action}"
@@ -1264,7 +1264,7 @@ msgstr "Зараз підтверджується зміна. Надішліть
 msgid "Cancel the change"
 msgstr "Скасувати"
 
-#: lib/phoenix_kit_agent/turns/history.ex:205
+#: lib/phoenix_kit_agent/turns/history.ex:208
 #, elixir-autogen, elixir-format
 msgid "[confirmation] waiting: %{action}"
 msgstr "[підтвердження] очікує: %{action}"
@@ -1506,7 +1506,7 @@ msgstr "Модель не відповіла; можливо, вона не пр
 msgid "This change is already waiting for confirmation. Run or cancel its card in the chat."
 msgstr "Ця зміна вже очікує підтвердження. Виконайте або скасуйте її на картці в чаті."
 
-#: lib/phoenix_kit_agent/turns/history.ex:177
+#: lib/phoenix_kit_agent/turns/history.ex:180
 #, elixir-autogen, elixir-format
 msgid "%{ok} of %{total} succeeded, %{failed} failed"
 msgstr "виконано %{ok} з %{total}, не вдалося: %{failed}"

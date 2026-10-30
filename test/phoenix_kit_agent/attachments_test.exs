@@ -2065,7 +2065,7 @@ defmodule PhoenixKitAgent.AttachmentsTest do
                String.split(content, "[... the file continues: the rest of it is not shown here]")
              ) == 4
 
-      for n <- 1..3, do: assert(content =~ "[Attachment: f#{n}.txt]")
+      for n <- 1..3, do: assert(content =~ ~s|): "f#{n}.txt"]|)
     end
   end
 
@@ -2085,7 +2085,7 @@ defmodule PhoenixKitAgent.AttachmentsTest do
 
       for body <- [first, second] do
         assert [%{"content" => content} | _] = chat_messages(body)
-        assert content =~ "[Attachment: notes.txt] (file_uuid: #{file.file_uuid})"
+        assert content =~ ~s|[Attachment (file_uuid: #{file.file_uuid}): "notes.txt"]|
       end
     end
   end

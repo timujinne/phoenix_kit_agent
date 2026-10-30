@@ -54,7 +54,9 @@ defmodule PhoenixKitAgent.Conversations do
   truncated:}` (`count` — how many items it found, when the result has one
   list or a `count`/`total`; `nil` otherwise), and the `tool_calls` of an
   `assistant` message keep only `"id"` and `"name"`. The turn loop reads the
-  full rows on its own (spec §6.6).
+  full rows on its own (spec §6.6). The `notice` of a confirmed write that
+  counted its rows keeps `tool_result: %{"ok" => n, "failed" => m}` (two
+  integers, nothing else of the result), and a client gets it.
 
   ## Events
 

@@ -28,7 +28,8 @@ defmodule PhoenixKitAgent.Test.Tools do
   what it may not do now, the item being edited by someone else); a real run
   of the name `"fail"` fails, after the confirmation is spent; one of the name
   `"batch"` answers with a `summary` of `ok: 7, failed: 3` (and a free-text
-  `note`).
+  `note`); `"batch_atoms"` answers the same kind of summary with atom keys, and
+  `"batch_long"` one inside a result longer than the result limit.
   """
 
   alias PhoenixKit.API.Tool
@@ -89,6 +90,16 @@ defmodule PhoenixKitAgent.Test.Tools do
          %{
            "written" => true,
            "summary" => %{"ok" => 7, "failed" => 3, "note" => "FREE-TEXT-MARKER"}
+         }}
+
+      %{"name" => "batch_atoms"} ->
+        {:ok, %{written: true, summary: %{ok: 2, failed: 0}}}
+
+      %{"name" => "batch_long"} ->
+        {:ok,
+         %{
+           "padding" => String.duplicate("x", 20_000),
+           "summary" => %{"ok" => 4, "failed" => 1}
          }}
 
       _ ->

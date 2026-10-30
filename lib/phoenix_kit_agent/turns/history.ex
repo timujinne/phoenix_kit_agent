@@ -69,7 +69,10 @@ defmodule PhoenixKitAgent.Turns.History do
   @spec user_content(String.t(), [Attachment.t()], pos_integer()) :: String.t()
   def user_content(text, attachments, limit) do
     # The lines that name the files are not part of any share.
-    named = attachments |> Enum.map(&String.length(file_ref(&1))) |> Enum.sum()
+    named =
+      attachments
+      |> Enum.map(&(String.length(header(&1)) - String.length("[Attachment: " <> &1.filename)))
+      |> Enum.sum()
 
     share =
       div(max(limit - named, 0), max(Enum.count(attachments, &is_binary(&1.extracted_text)), 1))
@@ -79,7 +82,7 @@ defmodule PhoenixKitAgent.Turns.History do
     end)
   end
 
-  defp attachment_block(%{extracted_text: text, filename: filename} = attachment, share)
+  defp attachment_block(%{extracted_text: text} = attachment, share)
        when is_binary(text) do
     shown =
       cond do
@@ -95,23 +98,23 @@ defmodule PhoenixKitAgent.Turns.History do
           text
       end
 
-    "\n\n[Attachment: " <> filename <> "]" <> file_ref(attachment) <> "\n" <> shown
+    "\n\n" <> header(attachment) <> "]\n" <> shown
   end
 
-  defp attachment_block(%{filename: filename} = attachment, _share) do
+  defp attachment_block(attachment, _share) do
     if Attachments.pixels?(attachment),
-      do:
-        "\n\n[Attachment: " <>
-          filename <> " - " <> pixels_line(attachment) <> "]" <> file_ref(attachment),
+      do: "\n\n" <> header(attachment) <> " - " <> pixels_line(attachment) <> "]",
       else: ""
   end
 
-  # The Storage file a tool can be given in place of the attachment; only a
-  # ready attachment names one.
-  defp file_ref(%{status: "ready", file_uuid: uuid}) when is_binary(uuid),
-    do: " (file_uuid: " <> uuid <> ")"
+  # The opening of an attachment's line, without the closing bracket. A ready
+  # attachment names the Storage file a tool can be given in place of it: the
+  # uuid first, then the user's file name in quotes, so a name cannot pass for
+  # a second reference.
+  defp header(%{status: "ready", file_uuid: uuid, filename: filename}) when is_binary(uuid),
+    do: "[Attachment (file_uuid: " <> uuid <> "): " <> inspect(filename)
 
-  defp file_ref(_attachment), do: ""
+  defp header(%{filename: filename}), do: "[Attachment: " <> filename
 
   defp pixels_line(%{kind: "pdf", pages: pages}) when is_integer(pages) do
     "a scanned document of #{Extract.count(pages, "page")}; its first #{min(pages, Bounds.get(:scan_pages))} " <>

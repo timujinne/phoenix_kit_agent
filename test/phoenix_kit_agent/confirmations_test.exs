@@ -877,6 +877,18 @@ defmodule PhoenixKitAgent.ConfirmationsTest do
       refute inspect(body) =~ "FREE-TEXT-MARKER"
     end
 
+    test "a summary with atom keys is kept too", ctx do
+      card = card!(ctx, %{"name" => "batch_atoms"})
+      assert {:ok, :confirmed} = confirm(ctx, card)
+      assert [%Message{tool_result: %{"ok" => 2, "failed" => 0}}] = outcome_notices(ctx.chat)
+    end
+
+    test "a result longer than the tool result limit keeps its summary", ctx do
+      card = card!(ctx, %{"name" => "batch_long"})
+      assert {:ok, :confirmed} = confirm(ctx, card)
+      assert [%Message{tool_result: %{"ok" => 4, "failed" => 1}}] = outcome_notices(ctx.chat)
+    end
+
     test "a result with no summary reads as before", ctx do
       card = card!(ctx)
       assert {:ok, :confirmed} = confirm(ctx, card)
