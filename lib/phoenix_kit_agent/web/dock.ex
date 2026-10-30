@@ -154,6 +154,7 @@ defmodule PhoenixKitAgent.Web.Dock do
   alias PhoenixKitAgent.Schemas.{Message, UserSettings}
   alias PhoenixKitAgent.Turns.Monitor
   alias PhoenixKitAgent.Web.Dock.{Panel, Texts}
+  alias PhoenixKitWeb.ResumableUploads
   alias PhoenixKitWeb.Users.MultiSession
 
   # `image/*` next to the extensions: a camera picture reaches the browser by
@@ -162,6 +163,11 @@ defmodule PhoenixKitAgent.Web.Dock do
   @accept ~w(image/* .png .jpg .jpeg .webp .heic .heif .pdf .xlsx .csv .txt .md)
   # A slow tablet link needs more than LiveView's 10 s between two chunks.
   @chunk_timeout_ms 60_000
+  # The refusals that a second try would not change (the browser may forget
+  # its copy of the file); any other, `:storage_unavailable` first, is a
+  # failure of the moment.
+  @final_refusals ~w(forbidden impersonated file_unreadable empty_file too_large
+                     unsupported_type unsupported_encoding no_vision_model too_many)a
   @mb 1_048_576
   # How many messages a chat opens with, and how many more "Earlier" brings.
   @messages_page 50
@@ -224,13 +230,19 @@ defmodule PhoenixKitAgent.Web.Dock do
         restored: 0,
         timeout_ms: Config.turn_deadline_s() * 1_000 + Monitor.stop_grace_ms() + @wait_margin_ms
       )
-      |> allow_upload(:files,
-        accept: @accept,
-        max_entries: max(settings.max_attachments_per_message, 1),
-        max_file_size: max(settings.max_attachment_mb * @mb, 1),
-        auto_upload: true,
-        chunk_timeout: @chunk_timeout_ms,
-        progress: &handle_progress/3
+      |> ResumableUploads.allow_resumable_upload(
+        :files,
+        [
+          accept: @accept,
+          max_entries: max(settings.max_attachments_per_message, 1),
+          max_file_size: max(settings.max_attachment_mb * @mb, 1),
+          auto_upload: true,
+          chunk_timeout: @chunk_timeout_ms,
+          progress: &handle_progress/3
+        ],
+        policy: &resume_policy/3,
+        on_rejected: &upload_rejected/3,
+        cancel_rejected: false
       )
       |> stream_configure(:messages, dom_id: &"pk-agent-msg-#{&1.uuid}")
       |> stream(:messages, [])
@@ -869,6 +881,35 @@ defmodule PhoenixKitAgent.Web.Dock do
   defp handle_progress(name, entry, socket),
     do: guarded(socket, fn -> progress(name, entry, socket) end)
 
+  # What a file picked here is for, as the browser keeps it with the file: the
+  # open chat, or "a new chat" while none is open. Only a file kept for what
+  # the panel shows now is carried on by itself; any other waits for a click.
+  defp upload_context(%{conversation: %{uuid: uuid}}), do: uuid
+  defp upload_context(%{user_uuid: user_uuid}), do: "new:" <> user_uuid
+
+  defp resume_policy(socket, item, free) do
+    if item.context == upload_context(socket.assigns),
+      do: ResumableUploads.default_policy(socket, item, free),
+      else: :ask
+  end
+
+  # A file LiveView turned away keeps its chip with the reason and its cancel
+  # button (the logging is in `log_upload_errors/1`): core only tells the
+  # browser to forget its copy. Nothing is set here: this runs after a
+  # render, which would not show it.
+  defp upload_rejected(socket, _entry, _errors), do: socket
+
+  # What the browser is told of a file it holds a copy of: saved, or refused
+  # for good. A failure of the moment says nothing: the copy stays, and comes
+  # back as a button.
+  defp acknowledge(socket, nil, _outcome), do: socket
+  defp acknowledge(socket, entry, :stored), do: ResumableUploads.stored(socket, :files, entry)
+
+  defp acknowledge(socket, entry, {:refused, reason}) when reason in @final_refusals,
+    do: ResumableUploads.rejected(socket, :files, entry)
+
+  defp acknowledge(socket, _entry, {:refused, _transient}), do: socket
+
   # A finished upload goes to `Attachments.add/4` off this process; its
   # temporary file is kept (`:postpone`) until `add/4` is done with it.
   defp progress(:files, %{done?: true} = entry, %{assigns: %{active?: true}} = socket) do
@@ -884,7 +925,11 @@ defmodule PhoenixKitAgent.Web.Dock do
          start_async(socket, {:attach, entry.ref}, fn -> safe_add(ref, uuid, upload, opts) end)}
 
       {:error, reason, socket} ->
-        {:noreply, socket |> cancel_upload(:files, entry.ref) |> refused(reason)}
+        {:noreply,
+         socket
+         |> cancel_upload(:files, entry.ref)
+         |> acknowledge(entry, {:refused, reason})
+         |> refused(reason)}
     end
   end
 
@@ -932,16 +977,25 @@ defmodule PhoenixKitAgent.Web.Dock do
     do: guarded(socket, fn -> attached(name, result, socket) end)
 
   defp attached({:attach, entry_ref}, result, socket) do
+    entry = Enum.find(socket.assigns.uploads.files.entries, &(&1.ref == entry_ref))
     socket = drop_entry(socket, entry_ref)
 
     case result do
       {:ok, {:ok, attachment}} ->
         {:noreply,
-         socket |> assign(error: nil, fresh_uuid: nil) |> refresh_attachment(attachment.uuid)}
+         socket
+         |> acknowledge(entry, :stored)
+         |> assign(error: nil, fresh_uuid: nil)
+         |> refresh_attachment(attachment.uuid)}
 
       {:ok, {:error, reason}} ->
         Logger.warning("[PhoenixKitAgent] a file was not added: #{reason_class(reason)}")
-        {:noreply, socket |> refused(reason) |> drop_fresh(entry_ref)}
+
+        {:noreply,
+         socket
+         |> acknowledge(entry, {:refused, reason})
+         |> refused(reason)
+         |> drop_fresh(entry_ref)}
 
       {:exit, _reason} ->
         Logger.warning("[PhoenixKitAgent] a file was not added: its task ended")
@@ -1347,6 +1401,8 @@ defmodule PhoenixKitAgent.Web.Dock do
   end
 
   def render(assigns) do
+    assigns = assign(assigns, :upload_context, upload_context(assigns))
+
     ~H"""
     <Panel.dock
       user_uuid={@user_uuid}
@@ -1365,6 +1421,8 @@ defmodule PhoenixKitAgent.Web.Dock do
       instructions_form={@instructions_form}
       unsent={@unsent}
       upload={@uploads.files}
+      resumable={@resumable_uploads}
+      upload_context={@upload_context}
     />
     """
   end

@@ -32,6 +32,7 @@ defmodule PhoenixKitAgent.Web.Dock.Panel do
 
   import PhoenixKitWeb.Components.Core.Icon, only: [icon: 1]
   import PhoenixKitWeb.Components.Core.Input, only: [input: 1]
+  import PhoenixKitWeb.Components.Core.ResumableUpload, only: [resumable_upload: 1]
   import PhoenixKitWeb.Components.Core.Textarea, only: [textarea: 1]
   import PhoenixKitAgent.Web.Dock.Components
 
@@ -61,6 +62,8 @@ defmodule PhoenixKitAgent.Web.Dock.Panel do
   attr(:instructions_form, :any, default: nil)
   attr(:unsent, :list, required: true)
   attr(:upload, :any, required: true, doc: "`@uploads.files`")
+  attr(:resumable, :map, required: true, doc: "`@resumable_uploads`")
+  attr(:upload_context, :string, required: true, doc: "what a file picked now is for")
 
   def dock(assigns) do
     ~H"""
@@ -208,7 +211,15 @@ defmodule PhoenixKitAgent.Web.Dock.Panel do
           </span>
         </div>
 
-        <.composer upload={@upload} unsent={@unsent} turn_ref={@turn_ref} activity={@activity} />
+        <.composer
+          upload={@upload}
+          resumable={@resumable}
+          upload_context={@upload_context}
+          user_uuid={@user_uuid}
+          unsent={@unsent}
+          turn_ref={@turn_ref}
+          activity={@activity}
+        />
       </section>
     </div>
     """
@@ -327,6 +338,9 @@ defmodule PhoenixKitAgent.Web.Dock.Panel do
   end
 
   attr(:upload, :any, required: true)
+  attr(:resumable, :map, required: true)
+  attr(:upload_context, :string, required: true)
+  attr(:user_uuid, :string, required: true)
   attr(:unsent, :list, required: true)
   attr(:turn_ref, :string, default: nil)
   attr(:activity, :any, required: true)
@@ -382,31 +396,45 @@ defmodule PhoenixKitAgent.Web.Dock.Panel do
         aria-label={gettext("Message")}
         class="textarea textarea-sm w-full resize-none text-sm"
       ></textarea>
-      <div class="flex items-center gap-2">
-        <label
-          for={@upload.ref}
-          class="btn btn-ghost btn-sm btn-circle"
-          aria-label={gettext("Attach a file")}
-          title={gettext("Attach a file")}
-        >
-          <.icon name="hero-paper-clip" class="w-4 h-4" />
-        </label>
-        <.live_file_input upload={@upload} class="hidden" />
-        <span class="flex-1"></span>
-        <button
-          :if={@turn_ref}
-          id="pk-agent-stop"
-          type="button"
-          phx-click="stop"
-          class="btn btn-sm btn-outline btn-error"
-          disabled={@activity == :stopping}
-        >
-          <.icon name="hero-stop" class="w-4 h-4" /> {gettext("Stop")}
-        </button>
-        <button id="pk-agent-send" type="submit" class="btn btn-sm btn-primary" disabled={!!@turn_ref}>
-          <.icon name="hero-paper-airplane" class="w-4 h-4" /> {gettext("Send")}
-        </button>
-      </div>
+      <.resumable_upload
+        upload={@upload}
+        resumable={@resumable}
+        scope="agent-dock|files"
+        context={@upload_context}
+        user={@user_uuid}
+      >
+        <div class="flex items-center gap-2">
+          <label
+            for={@upload.ref}
+            class="btn btn-ghost btn-sm btn-circle"
+            aria-label={gettext("Attach a file")}
+            title={gettext("Attach a file")}
+          >
+            <.icon name="hero-paper-clip" class="w-4 h-4" />
+          </label>
+          <.live_file_input upload={@upload} class="hidden" />
+          <span class="flex-1"></span>
+          <button
+            :if={@turn_ref}
+            id="pk-agent-stop"
+            type="button"
+            phx-click="stop"
+            class="btn btn-sm btn-outline btn-error"
+            disabled={@activity == :stopping}
+          >
+            <.icon name="hero-stop" class="w-4 h-4" /> {gettext("Stop")}
+          </button>
+          <%!-- Disabled while a lost upload is set to go on by itself --%>
+          <button
+            id="pk-agent-send"
+            type="submit"
+            class="btn btn-sm btn-primary"
+            disabled={!!@turn_ref or @resumable.files.pending}
+          >
+            <.icon name="hero-paper-airplane" class="w-4 h-4" /> {gettext("Send")}
+          </button>
+        </div>
+      </.resumable_upload>
     </form>
     """
   end
