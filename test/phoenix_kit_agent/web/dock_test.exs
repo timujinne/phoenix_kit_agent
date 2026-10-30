@@ -953,6 +953,34 @@ defmodule PhoenixKitAgent.Web.DockTest do
       assert messages(ctx.chat) == []
     end
 
+    test "a send while a lost upload is set to go on by itself waits for it", ctx do
+      view = dock(ctx)
+      open_chat(view, ctx.chat)
+
+      render_hook(view, "pk_upload_resume", %{
+        "upload" => "files",
+        "items" => [
+          %{
+            "id" => "id-a.txt",
+            "key" => "a.txt|4|7",
+            "seq" => "s-a.txt",
+            "name" => "a.txt",
+            "size" => 4,
+            "context" => ctx.chat.uuid,
+            "has_bytes" => true,
+            "state" => "pending",
+            "attempts" => 0,
+            "fresh" => true
+          }
+        ]
+      })
+
+      send_text(view, "Now")
+
+      assert has_element?(view, "#pk-agent-dock-error", "Wait until the files are read.")
+      assert messages(ctx.chat) == []
+    end
+
     test "an exception at the start does not take the panel down", ctx do
       view = dock(ctx)
       open_chat(view, ctx.chat)

@@ -100,7 +100,12 @@ defmodule PhoenixKitAgent.Web.Dock do
   of LiveView's own temporary file (`consume_uploaded_entry/3`, kept until
   `add/4` is done, which runs off this process); the row is read again after
   `add/4` (it may be settled already) and shown only while its chat is the
-  one open, and a failed one can be removed. An
+  one open, and a failed one can be removed. The files are resumable uploads
+  (`PhoenixKitWeb.ResumableUploads`): the browser keeps its copy until the
+  panel says `stored` or `rejected`, so a photo picked while the socket was
+  down goes on after the reconnect, into the chat that is open when it
+  arrives. Its `resume_context` is only compared with what the panel shows
+  now (to carry it on by itself or to ask); it never picks the chat. An
   upload can be cancelled while it is on its way, not once `add/4` has it; a
   cancel of an entry that is not there changes nothing. An exception in
   `add/4` is caught in its task and logged as its class only.
@@ -747,7 +752,8 @@ defmodule PhoenixKitAgent.Web.Dock do
       not is_binary(text) or String.trim(text) == "" ->
         refused(socket, :empty_message)
 
-      Enum.any?(socket.assigns.unsent, &(&1.status == "pending")) or uploading?(socket) ->
+      Enum.any?(socket.assigns.unsent, &(&1.status == "pending")) or uploading?(socket) or
+          ResumableUploads.pending?(socket, :files) ->
         refused(socket, :files_pending)
 
       true ->
