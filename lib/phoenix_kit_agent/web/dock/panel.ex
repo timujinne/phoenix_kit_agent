@@ -497,7 +497,9 @@ defmodule PhoenixKitAgent.Web.Dock.Panel do
         mounted() {
           this.stick = true
           this.navigating = false
-          this.token = this.tokenOf()
+          this.conversation = this.el.dataset.conversation || ""
+          this.restored = this.el.dataset.restored || ""
+          this.restoredOnce = false
           this.pin = () => { this.el.scrollTop = this.el.scrollHeight }
           // The feed is hidden (not removed) until it stands at its end, so
           // that no frame shows it at the top.
@@ -525,10 +527,13 @@ defmodule PhoenixKitAgent.Web.Dock.Panel do
             if (event.detail && event.detail.kind === "redirect") {
               this.navigating = true
               this.navStick = this.stick
-              if (this.stick) this.hide()
+              // If the stop never comes, the user's scrolling counts again.
+              clearTimeout(this.navFailsafe)
+              this.navFailsafe = setTimeout(() => { this.navigating = false }, 3000)
             }
           }
           this.onStop = () => {
+            clearTimeout(this.navFailsafe)
             if (this.navigating && this.navStick) this.stick = true
             this.navigating = false
             if (this.stick) this.settle()
@@ -538,10 +543,16 @@ defmodule PhoenixKitAgent.Web.Dock.Panel do
           window.addEventListener("phx:page-loading-stop", this.onStop)
         },
         updated() {
-          // Another chat, or the browser restored the panel: start at the end.
-          const token = this.tokenOf()
-          if (token !== this.token) {
-            this.token = token
+          // Another chat, or the first restore after the mount: start at the end.
+          // Later restores (a re-join) leave a user who reads older messages be.
+          const conversation = this.el.dataset.conversation || ""
+          const restored = this.el.dataset.restored || ""
+          const first = !this.restoredOnce && restored !== this.restored
+          if (restored !== this.restored) this.restoredOnce = true
+          const changed = conversation !== this.conversation
+          this.conversation = conversation
+          this.restored = restored
+          if (changed || first) {
             this.stick = true
             this.hide()
             this.settle()
@@ -558,9 +569,7 @@ defmodule PhoenixKitAgent.Web.Dock.Panel do
           if (this.observer) this.observer.disconnect()
           if (this.resizer) this.resizer.disconnect()
           clearTimeout(this.failsafe)
-        },
-        tokenOf() {
-          return (this.el.dataset.conversation || "") + ":" + (this.el.dataset.restored || "")
+          clearTimeout(this.navFailsafe)
         },
         hide() {
           this.el.style.visibility = "hidden"
