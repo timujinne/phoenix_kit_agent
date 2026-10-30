@@ -435,7 +435,7 @@ defmodule PhoenixKitAgent.Confirmations do
              do: {:ok, :changed}
 
       :error ->
-        settled(click, "confirmed")
+        settled(click |> Map.put(:counts, counts(result)), "confirmed")
     end
   end
 
@@ -596,15 +596,34 @@ defmodule PhoenixKitAgent.Confirmations do
   end
 
   # The card's notice: its outcome and the tool's name; the text is the
-  # stored form, the panel shows it by its outcome.
+  # stored form, the panel shows it by its outcome. A confirmed write that
+  # counted its rows keeps the two numbers in `tool_result`.
   defp notice(click, outcome) do
     {%{
        role: "notice",
        content: notice_text(outcome),
        tool_name: click.card.tool_name,
-       tool_outcome: outcome
+       tool_outcome: outcome,
+       tool_result: Map.get(click, :counts)
      }, [confirmation_uuid: click.card.confirmation_uuid]}
   end
+
+  # The convention any tool may follow: a top-level `summary` map with the
+  # integers `ok` and `failed`. Only those two numbers are kept, never text
+  # of the result.
+  defp counts(result) when is_map(result) do
+    with summary when is_map(summary) <- field(result, "summary"),
+         ok when is_integer(ok) and ok >= 0 <- field(summary, "ok"),
+         failed when is_integer(failed) and failed >= 0 <- field(summary, "failed") do
+      %{"ok" => ok, "failed" => failed}
+    else
+      _no_counts -> nil
+    end
+  end
+
+  defp counts(_result), do: nil
+
+  defp field(map, key), do: Map.get(map, key, Map.get(map, String.to_existing_atom(key)))
 
   # A new card for the same call: the same assistant message and call id.
   defp card_message(click, confirmation_uuid) do

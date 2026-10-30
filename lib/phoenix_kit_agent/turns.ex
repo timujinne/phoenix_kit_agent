@@ -539,6 +539,7 @@ defmodule PhoenixKitAgent.Turns do
               :tool_calls,
               :tool_name,
               :tool_outcome,
+              :tool_result,
               :confirmation_uuid
             ])
         )
