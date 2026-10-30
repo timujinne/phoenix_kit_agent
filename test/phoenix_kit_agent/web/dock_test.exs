@@ -591,8 +591,8 @@ defmodule PhoenixKitAgent.Web.DockTest do
     test "the browser's memory is pushed on mount and again after a reconnect", ctx do
       script = ctx |> dock() |> hook_script(".DockState")
 
-      assert script =~ ~r/mounted\(\)\s*\{[^`]*this\.restore\(\)\s*\},\s*reconnected\(\)/
-      assert script =~ ~r/reconnected\(\)\s*\{\s*this\.restore\(\)/
+      assert script =~ ~r/mounted\(\)\s*\{[^`]*this\.restore\(\)\s*\},\s*updated\(\)/
+      assert script =~ ~r/reconnected\(\)\s*\{\s*this\.apply\(\)\s*this\.restore\(\)/
       assert script =~ ~r/restore\(\)\s*\{[^}]*pushEvent\("restore"/
     end
 
@@ -1290,6 +1290,33 @@ defmodule PhoenixKitAgent.Web.DockTest do
       # The same state again: still a change for the browser to apply.
       render_hook(view, "restore", %{"open" => true, "conversation_uuid" => uuid})
       assert has_element?(view, "#pk-agent-panel[data-restored='2']")
+    end
+
+    test "the feed scroller carries the chat and the restore count the hook pins on", ctx do
+      view = dock(ctx)
+      uuid = ctx.chat.uuid
+
+      render_hook(view, "restore", %{"open" => true, "conversation_uuid" => uuid})
+
+      assert has_element?(
+               view,
+               "#pk-agent-feed-scroll[data-conversation='#{uuid}'][data-restored='1']"
+             )
+
+      assert has_element?(view, "#pk-agent-feed-scroll > #pk-agent-feed-content #pk-agent-feed")
+    end
+
+    test "the hooks keep the open state across navigations and pin the feed after them", ctx do
+      view = dock(ctx)
+      state = hook_script(view, ".DockState")
+      feed = hook_script(view, ".Feed")
+
+      assert state =~ "phx:page-loading-stop"
+      assert state =~ ~s|classList.add("pk-dock-open")|
+      refute state =~ ~s|classList.remove("pk-dock-open")|
+      assert feed =~ "phx:page-loading-stop"
+      assert feed =~ "phx:page-loading-start"
+      assert feed =~ "resizer.observe(this.el.firstElementChild)"
     end
 
     test "the indicator's own timeout starts again after a reconnect and for each turn", ctx do

@@ -16,7 +16,8 @@ defmodule PhoenixKitAgent.Web.Dock.Panel do
       width in `localStorage`, and tells the LiveView on mount and when it
       joins again after a lost connection (`restore`): a re-join mounts the
       LiveView afresh, while the hook's element stays and gets no `mounted`;
-    * `.Feed` — keeps the feed scrolled to its end while the user is there;
+    * `.Feed` — keeps the feed scrolled to its end while the user is there,
+      also after a live navigation moves the view (it is hidden until pinned);
     * `.Composer` — Enter sends, the page's path goes with the form, the text
       is cleared once the turn started (`pk-agent:sent`). The textarea is
       `phx-update="ignore"`: the browser owns the draft, so a re-render (a
@@ -163,20 +164,30 @@ defmodule PhoenixKitAgent.Web.Dock.Panel do
           </button>
         </div>
 
-        <div class="flex-1 min-h-0 overflow-y-auto px-3 py-3" id="pk-agent-feed-scroll" phx-hook=".Feed">
-          <div :if={@earlier?} class="pb-3 text-center">
-            <button id="pk-agent-earlier" type="button" phx-click="load_earlier" class="btn btn-ghost btn-xs">
-              {gettext("Earlier messages")}
-            </button>
-          </div>
-          <div :if={@pinned != []} id="pk-agent-pinned" class="space-y-3 pb-3">
-            <.feed_message :for={message <- @pinned} id={"pk-agent-pinned-" <> message.uuid} message={message} />
-          </div>
-          <div id="pk-agent-feed" phx-update="stream" class="space-y-3">
-            <div id="pk-agent-feed-empty" class="hidden only:block py-8 text-center text-xs opacity-60">
-              {gettext("Ask about anything you can see in the system.")}
+        <%!-- `style` belongs to `.Feed` (it hides the feed while it is being pinned to the end) --%>
+        <div
+          class="flex-1 min-h-0 overflow-y-auto px-3 py-3"
+          id="pk-agent-feed-scroll"
+          phx-hook=".Feed"
+          phx-mounted={JS.ignore_attributes(["style"])}
+          data-conversation={@conversation && @conversation.uuid}
+          data-restored={@restored}
+        >
+          <div id="pk-agent-feed-content">
+            <div :if={@earlier?} class="pb-3 text-center">
+              <button id="pk-agent-earlier" type="button" phx-click="load_earlier" class="btn btn-ghost btn-xs">
+                {gettext("Earlier messages")}
+              </button>
             </div>
-            <.feed_message :for={{dom_id, message} <- @messages} id={dom_id} message={message} />
+            <div :if={@pinned != []} id="pk-agent-pinned" class="space-y-3 pb-3">
+              <.feed_message :for={message <- @pinned} id={"pk-agent-pinned-" <> message.uuid} message={message} />
+            </div>
+            <div id="pk-agent-feed" phx-update="stream" class="space-y-3">
+              <div id="pk-agent-feed-empty" class="hidden only:block py-8 text-center text-xs opacity-60">
+                {gettext("Ask about anything you can see in the system.")}
+              </div>
+              <.feed_message :for={{dom_id, message} <- @messages} id={dom_id} message={message} />
+            </div>
           </div>
         </div>
 
@@ -407,18 +418,36 @@ defmodule PhoenixKitAgent.Web.Dock.Panel do
         mounted() {
           this.key = this.el.dataset.storageKey
           const state = this.read()
-          if (typeof state.width === "number") {
-            document.body.style.setProperty("--pk-dock-width", this.clamp(state.width) + "px")
-          }
-          if (state.open === true) document.body.classList.add("pk-dock-open")
+          // What the user chose, kept here: the class is on <body>, outside the
+          // LiveView, and nothing else puts it back after a navigation.
+          this.open = state.open === true
+          this.width = typeof state.width === "number" ? this.clamp(state.width) : null
+          this.apply()
           this.handleEvent("pk-agent:store", (patch) => this.write(patch))
           this.el.addEventListener("pointerdown", (event) => {
             const handle = event.target.closest("[data-pk-agent-resize]")
             if (handle) this.resize(event, handle)
           })
+          this.el.addEventListener("click", (event) => {
+            if (event.target.closest("#pk-agent-close")) this.open = false
+          })
+          this.onStop = () => this.apply()
+          window.addEventListener("phx:page-loading-stop", this.onStop)
           this.restore()
         },
-        reconnected() { this.restore() },
+        updated() { this.apply() },
+        reconnected() {
+          this.apply()
+          this.restore()
+        },
+        destroyed() {
+          window.removeEventListener("phx:page-loading-stop", this.onStop)
+        },
+        apply() {
+          if (this.width) document.body.style.setProperty("--pk-dock-width", this.width + "px")
+          // Only ever adds: closing is the user's own act (the close button).
+          if (this.open === true) document.body.classList.add("pk-dock-open")
+        },
         restore() {
           const state = this.read()
           this.pushEvent("restore", {
@@ -438,6 +467,8 @@ defmodule PhoenixKitAgent.Web.Dock.Panel do
           try {
             window.localStorage.setItem(this.key, JSON.stringify(Object.assign(this.read(), patch)))
           } catch (_error) {}
+          if (typeof patch.open === "boolean") this.open = patch.open
+          if (typeof patch.width === "number") this.width = patch.width
         },
         clamp(width) {
           const most = Math.max(320, Math.min(900, window.innerWidth - 360))
@@ -465,34 +496,90 @@ defmodule PhoenixKitAgent.Web.Dock.Panel do
       {
         mounted() {
           this.stick = true
-          this.scrollToEnd = () => { this.el.scrollTop = this.el.scrollHeight }
-          this.scrollToEnd()
-          requestAnimationFrame(this.scrollToEnd)
+          this.navigating = false
+          this.token = this.tokenOf()
+          this.pin = () => { this.el.scrollTop = this.el.scrollHeight }
+          // The feed is hidden (not removed) until it stands at its end, so
+          // that no frame shows it at the top.
+          this.hide()
+          this.settle()
           this.el.addEventListener("scroll", () => {
-            // A hidden panel (display: none) reports 0 and must not drop the flag.
-            if (this.el.clientHeight === 0) return
+            // A hidden panel (display: none) reports 0, and a sticky view that
+            // is moved by a navigation is reset to 0: neither is the user.
+            if (this.navigating || this.el.clientHeight === 0) return
             this.stick = this.el.scrollHeight - this.el.scrollTop - this.el.clientHeight < 48
           })
           this.observer = new MutationObserver(() => {
-            if (this.stick) this.scrollToEnd()
+            if (this.stick) this.pin()
           })
           this.observer.observe(this.el, {childList: true, subtree: true})
-          // Fires when the panel is shown again or the sticky view is re-attached
-          // after a live navigation (the browser resets scrollTop then).
+          // The content, not only the scroller: a picture or a rendered card
+          // that grows late must keep the end in view while the user is there.
           this.resizer = new ResizeObserver(() => {
-            if (this.stick) this.scrollToEnd()
+            if (this.stick) this.pin()
           })
           this.resizer.observe(this.el)
+          if (this.el.firstElementChild) this.resizer.observe(this.el.firstElementChild)
+          this.onStart = (event) => {
+            // Only a live navigation moves this view, and it resets the scroll.
+            if (event.detail && event.detail.kind === "redirect") {
+              this.navigating = true
+              this.navStick = this.stick
+              if (this.stick) this.hide()
+            }
+          }
+          this.onStop = () => {
+            if (this.navigating && this.navStick) this.stick = true
+            this.navigating = false
+            if (this.stick) this.settle()
+            else this.show()
+          }
+          window.addEventListener("phx:page-loading-start", this.onStart)
+          window.addEventListener("phx:page-loading-stop", this.onStop)
         },
         updated() {
-          if (this.stick) this.scrollToEnd()
+          // Another chat, or the browser restored the panel: start at the end.
+          const token = this.tokenOf()
+          if (token !== this.token) {
+            this.token = token
+            this.stick = true
+            this.hide()
+            this.settle()
+          } else if (this.stick) {
+            this.pin()
+          }
         },
         reconnected() {
-          if (this.stick) this.scrollToEnd()
+          if (this.stick) this.pin()
         },
         destroyed() {
+          window.removeEventListener("phx:page-loading-start", this.onStart)
+          window.removeEventListener("phx:page-loading-stop", this.onStop)
           if (this.observer) this.observer.disconnect()
           if (this.resizer) this.resizer.disconnect()
+          clearTimeout(this.failsafe)
+        },
+        tokenOf() {
+          return (this.el.dataset.conversation || "") + ":" + (this.el.dataset.restored || "")
+        },
+        hide() {
+          this.el.style.visibility = "hidden"
+          clearTimeout(this.failsafe)
+          this.failsafe = setTimeout(() => this.show(), 1500)
+        },
+        show() {
+          clearTimeout(this.failsafe)
+          this.el.style.visibility = ""
+        },
+        settle() {
+          this.pin()
+          requestAnimationFrame(() => {
+            this.pin()
+            requestAnimationFrame(() => {
+              this.pin()
+              this.show()
+            })
+          })
         }
       }
     </script>
