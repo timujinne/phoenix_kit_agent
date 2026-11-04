@@ -105,6 +105,11 @@ and `Web.Markdown`).
   file, an Owner/Admin of the site included. Bytes live in the hidden library
   (`PhoenixKitAgent.Library`) and leave only through `Attachments.url/3`
   (`Storage.authorized_url/4` for the session's scope) — never a Media URL.
+  A ready attachment's history line names its Storage `file_uuid`, so a host
+  tool can act on the file; a uuid in the model's text is not proof of
+  ownership, and such a tool checks it with `Attachments.file_for_user/2`
+  (the user uuid from the session's scope, never from the tool's arguments,
+  and the file uuid; the caller has checked the session).
   The content, not the name, decides the kind (`Attachments.Detect`). Files are
   processed in a task under `PhoenixKitAgent.Attachments.TaskSupervisor`
   (`children/0`), with a deadline and a heap limit; a failure is a code in
