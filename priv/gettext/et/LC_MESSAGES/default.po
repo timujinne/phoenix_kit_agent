@@ -43,7 +43,7 @@ msgstr "Fail ei ole valmis või ei kuulu sellesse vestlusse. Eemalda see ja proo
 msgid "A model could not be saved: it is no longer available. Choose again."
 msgstr "Mudelit ei saanud salvestada: see pole enam saadaval. Vali uuesti."
 
-#: lib/phoenix_kit_agent/web/dock.ex:389
+#: lib/phoenix_kit_agent/web/dock.ex:407
 #, elixir-autogen, elixir-format
 msgid "A title cannot be empty or longer than 200 characters."
 msgstr "Pealkiri ei tohi olla tühi ega pikem kui 200 tähemärki."
@@ -63,10 +63,10 @@ msgstr "Kasutaja"
 msgid "AI Agent"
 msgstr "AI-agent"
 
-#: lib/phoenix_kit_agent/web/dock/panel.ex:88
-#: lib/phoenix_kit_agent/web/dock/panel.ex:106
-#: lib/phoenix_kit_agent/web/dock/panel.ex:222
-#: lib/phoenix_kit_agent/web/dock/panel.ex:223
+#: lib/phoenix_kit_agent/web/dock/panel.ex:90
+#: lib/phoenix_kit_agent/web/dock/panel.ex:108
+#: lib/phoenix_kit_agent/web/dock/panel.ex:240
+#: lib/phoenix_kit_agent/web/dock/panel.ex:241
 #, elixir-autogen, elixir-format
 msgid "AI assistant"
 msgstr "AI-assistent"
@@ -101,13 +101,13 @@ msgstr "Lubatud"
 msgid "Apply to every user without limits of their own. Money is counted from the AI request journal, in US dollars, for endpoints that report a cost."
 msgstr "Kehtib igale kasutajale, kellel pole omi limiite. Raha arvestatakse AI päringute logist USA dollarites nende lõpp-punktide puhul, mis teatavad hinna."
 
-#: lib/phoenix_kit_agent/web/dock/panel.ex:299
-#: lib/phoenix_kit_agent/web/dock/panel.ex:300
+#: lib/phoenix_kit_agent/web/dock/panel.ex:317
+#: lib/phoenix_kit_agent/web/dock/panel.ex:318
 #, elixir-autogen, elixir-format
 msgid "Archive"
 msgstr "Arhiveeri"
 
-#: lib/phoenix_kit_agent/web/dock/panel.ex:177
+#: lib/phoenix_kit_agent/web/dock/panel.ex:188
 #, elixir-autogen, elixir-format
 msgid "Ask about anything you can see in the system."
 msgstr "Küsi mis tahes asja kohta, mida süsteemis näed."
@@ -117,8 +117,8 @@ msgstr "Küsi mis tahes asja kohta, mida süsteemis näed."
 msgid "Assistant"
 msgstr "Assistent"
 
-#: lib/phoenix_kit_agent/web/dock/panel.ex:378
-#: lib/phoenix_kit_agent/web/dock/panel.ex:379
+#: lib/phoenix_kit_agent/web/dock/panel.ex:385
+#: lib/phoenix_kit_agent/web/dock/panel.ex:386
 #, elixir-autogen, elixir-format
 msgid "Attach a file"
 msgstr "Lisa fail"
@@ -129,18 +129,17 @@ msgstr "Lisa fail"
 msgid "Attachments per message"
 msgstr "Manuseid sõnumi kohta"
 
-#: lib/phoenix_kit_agent/web/dock/panel.ex:524
+#: lib/phoenix_kit_agent/web/dock/panel.ex:648
 #, elixir-autogen, elixir-format
 msgid "Calling a tool: %{names}…"
 msgstr "Kutsun tööriista: %{names}…"
 
-#: lib/phoenix_kit_agent/web/dock/panel.ex:526
+#: lib/phoenix_kit_agent/web/dock/panel.ex:650
 #, elixir-autogen, elixir-format
 msgid "Calling a tool…"
 msgstr "Kutsun tööriista…"
 
-#: lib/phoenix_kit_agent/web/dock/panel.ex:264
-#: lib/phoenix_kit_agent/web/dock/panel.ex:351
+#: lib/phoenix_kit_agent/web/dock/panel.ex:282
 #: lib/phoenix_kit_agent/web/users_live.ex:665
 #, elixir-autogen, elixir-format
 msgid "Cancel"
@@ -156,9 +155,9 @@ msgstr "Kontrollin, mida mudelid toetavad…"
 msgid "Checking which models take tools…"
 msgstr "Kontrollin, millised mudelid toetavad tööriistu…"
 
-#: lib/phoenix_kit_agent/web/dock/panel.ex:123
-#: lib/phoenix_kit_agent/web/dock/panel.ex:124
-#: lib/phoenix_kit_agent/web/dock/panel.ex:161
+#: lib/phoenix_kit_agent/web/dock/panel.ex:125
+#: lib/phoenix_kit_agent/web/dock/panel.ex:126
+#: lib/phoenix_kit_agent/web/dock/panel.ex:163
 #, elixir-autogen, elixir-format
 msgid "Close"
 msgstr "Sulge"
@@ -188,7 +187,7 @@ msgstr "Vaikemudel"
 msgid "Defaults of the AI assistant"
 msgstr "AI-assistendi vaikeväärtused"
 
-#: lib/phoenix_kit_agent/web/dock/panel.ex:169
+#: lib/phoenix_kit_agent/web/dock/panel.ex:180
 #, elixir-autogen, elixir-format
 msgid "Earlier messages"
 msgstr "Varasemad sõnumid"
@@ -208,7 +207,7 @@ msgstr "Läheb iga kasutaja iga päringu algusesse, enne saidi enda osa, adminis
 msgid "History sent to the model, characters"
 msgstr "Mudelile saadetav ajalugu, tähemärki"
 
-#: lib/phoenix_kit_agent/web/dock/panel.ex:138
+#: lib/phoenix_kit_agent/web/dock/panel.ex:140
 #, elixir-autogen, elixir-format
 msgid "How the assistant should answer you. It follows the site's own rules first."
 msgstr "Kuidas assistent peaks sulle vastama. Esmalt järgitakse saidi enda reegleid."
@@ -234,7 +233,7 @@ msgstr "Limiidid"
 msgid "Manage the AI assistant"
 msgstr "Halda AI-assistenti"
 
-#: lib/phoenix_kit_agent/web/dock/panel.ex:371
+#: lib/phoenix_kit_agent/web/dock/panel.ex:368
 #, elixir-autogen, elixir-format
 msgid "Message"
 msgstr "Sõnum"
@@ -260,13 +259,13 @@ msgstr "Mooduli vaikeväärtus (%{name})"
 msgid "Module default (none set)"
 msgstr "Mooduli vaikeväärtus (pole määratud)"
 
-#: lib/phoenix_kit_agent/web/dock/panel.ex:310
+#: lib/phoenix_kit_agent/web/dock/panel.ex:328
 #, elixir-autogen, elixir-format
 msgid "More"
 msgstr "Veel"
 
-#: lib/phoenix_kit_agent/web/dock/panel.ex:239
-#: lib/phoenix_kit_agent/web/dock/panel.ex:519
+#: lib/phoenix_kit_agent/web/dock/panel.ex:257
+#: lib/phoenix_kit_agent/web/dock/panel.ex:643
 #, elixir-autogen, elixir-format
 msgid "New chat"
 msgstr "Uus vestlus"
@@ -276,12 +275,12 @@ msgstr "Uus vestlus"
 msgid "No"
 msgstr "Ei"
 
-#: lib/phoenix_kit_agent/web/dock/panel.ex:196
+#: lib/phoenix_kit_agent/web/dock/panel.ex:208
 #, elixir-autogen, elixir-format
 msgid "No answer has come. Open the chat again to see where it stands."
 msgstr "Vastust pole tulnud. Ava vestlus uuesti, et näha, mis seisus see on."
 
-#: lib/phoenix_kit_agent/web/dock/panel.ex:243
+#: lib/phoenix_kit_agent/web/dock/panel.ex:261
 #, elixir-autogen, elixir-format
 msgid "No chats yet."
 msgstr "Vestlusi veel pole."
@@ -381,8 +380,8 @@ msgstr "Omaniku assistenti saab muuta ainult omanik."
 msgid "Only an Owner can change this setting."
 msgstr "Seda sätet saab muuta ainult omanik."
 
-#: lib/phoenix_kit_agent/web/dock/panel.ex:113
-#: lib/phoenix_kit_agent/web/dock/panel.ex:114
+#: lib/phoenix_kit_agent/web/dock/panel.ex:115
+#: lib/phoenix_kit_agent/web/dock/panel.ex:116
 #, elixir-autogen, elixir-format
 msgid "Personal instructions"
 msgstr "Isiklikud juhised"
@@ -408,8 +407,8 @@ msgstr "Selle lugemine võttis liiga kaua aega."
 msgid "Remove the file"
 msgstr "Eemalda fail"
 
-#: lib/phoenix_kit_agent/web/dock/panel.ex:288
-#: lib/phoenix_kit_agent/web/dock/panel.ex:289
+#: lib/phoenix_kit_agent/web/dock/panel.ex:306
+#: lib/phoenix_kit_agent/web/dock/panel.ex:307
 #, elixir-autogen, elixir-format
 msgid "Rename"
 msgstr "Nimeta ümber"
@@ -419,8 +418,8 @@ msgstr "Nimeta ümber"
 msgid "Request content in the AI journal"
 msgstr "Päringu sisu AI logis"
 
-#: lib/phoenix_kit_agent/web/dock/panel.ex:149
-#: lib/phoenix_kit_agent/web/dock/panel.ex:262
+#: lib/phoenix_kit_agent/web/dock/panel.ex:151
+#: lib/phoenix_kit_agent/web/dock/panel.ex:280
 #: lib/phoenix_kit_agent/web/settings_live.ex:491
 #: lib/phoenix_kit_agent/web/settings_live.ex:564
 #: lib/phoenix_kit_agent/web/settings_live.ex:588
@@ -431,7 +430,7 @@ msgstr "Päringu sisu AI logis"
 msgid "Save"
 msgstr "Salvesta"
 
-#: lib/phoenix_kit_agent/web/dock/panel.ex:396
+#: lib/phoenix_kit_agent/web/dock/panel.ex:408
 #, elixir-autogen, elixir-format
 msgid "Send"
 msgstr "Saada"
@@ -479,12 +478,12 @@ msgstr "Kulu päevas"
 msgid "Spending per month"
 msgstr "Kulu kuus"
 
-#: lib/phoenix_kit_agent/web/dock/panel.ex:393
+#: lib/phoenix_kit_agent/web/dock/panel.ex:400
 #, elixir-autogen, elixir-format
 msgid "Stop"
 msgstr "Peata"
 
-#: lib/phoenix_kit_agent/web/dock/panel.ex:521
+#: lib/phoenix_kit_agent/web/dock/panel.ex:645
 #, elixir-autogen, elixir-format
 msgid "Stopping…"
 msgstr "Peatan…"
@@ -677,7 +676,7 @@ msgstr "Tööriist vastas."
 msgid "The tool failed."
 msgstr "Tööriist ebaõnnestus."
 
-#: lib/phoenix_kit_agent/web/dock/panel.ex:527
+#: lib/phoenix_kit_agent/web/dock/panel.ex:651
 #, elixir-autogen, elixir-format
 msgid "Thinking…"
 msgstr "Mõtlen…"
@@ -727,7 +726,7 @@ msgstr "Sel kuul"
 msgid "This user does not use the assistant."
 msgstr "See kasutaja ei kasuta assistenti."
 
-#: lib/phoenix_kit_agent/web/dock/panel.ex:259
+#: lib/phoenix_kit_agent/web/dock/panel.ex:277
 #, elixir-autogen, elixir-format
 msgid "Title"
 msgstr "Pealkiri"
@@ -843,7 +842,7 @@ msgstr "Kes AI-assistenti kasutab ja millistel limiitidel"
 msgid "Write a message first."
 msgstr "Kirjuta esmalt sõnum."
 
-#: lib/phoenix_kit_agent/web/dock/panel.ex:370
+#: lib/phoenix_kit_agent/web/dock/panel.ex:367
 #, elixir-autogen, elixir-format
 msgid "Write a message…"
 msgstr "Kirjuta sõnum…"

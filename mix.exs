@@ -92,7 +92,17 @@ defmodule PhoenixKitAgent.MixProject do
       # allow: :all, redeem_as/6, tool_availability/1), API.Confirm, the
       # OperationPreview component, SessionRef and hidden Storage libraries.
       # 2.64 is the first release with the AI journal's cost in dollars (V223).
-      pk_dep(:phoenix_kit, ">= 2.64.0 and < 4.0.0"),
+      #
+      # The chat's file input is an upload manager (UploadManager,
+      # ResumableUpload) that no release carries yet: it is on the fork's
+      # integration branch int/andi-core-2026-11-04 (upstream main 82b9b5c4a
+      # plus the folder move picker). Back to a Hex requirement once a release
+      # ships them. Was: pk_dep(:phoenix_kit, ">= 2.64.0 and < 4.0.0").
+      pk_dep(:phoenix_kit,
+        git: "https://github.com/timujinne/phoenix_kit.git",
+        ref: "8c43f82c7a591fa12030f694022d5f8b0dfbceb1",
+        override: true
+      ),
 
       # Model calls, endpoints, credentials, budget and the request journal
       # come from phoenix_kit_ai; this module only adds the chat layer: the AI

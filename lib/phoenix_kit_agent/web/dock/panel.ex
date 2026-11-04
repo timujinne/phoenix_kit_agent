@@ -32,7 +32,7 @@ defmodule PhoenixKitAgent.Web.Dock.Panel do
 
   import PhoenixKitWeb.Components.Core.Icon, only: [icon: 1]
   import PhoenixKitWeb.Components.Core.Input, only: [input: 1]
-  import PhoenixKitWeb.Components.Core.ResumableUpload, only: [resumable_upload: 1]
+  import PhoenixKitWeb.Components.Core.UploadManager, only: [upload_manager: 1]
   import PhoenixKitWeb.Components.Core.Textarea, only: [textarea: 1]
   import PhoenixKitAgent.Web.Dock.Components
 
@@ -62,8 +62,6 @@ defmodule PhoenixKitAgent.Web.Dock.Panel do
   attr(:instructions_form, :any, default: nil)
   attr(:unsent, :list, required: true)
   attr(:upload, :any, required: true, doc: "`@uploads.files`")
-  attr(:resumable, :map, required: true, doc: "`@resumable_uploads`")
-  attr(:upload_context, :string, required: true, doc: "what a file picked now is for")
 
   def dock(assigns) do
     ~H"""
@@ -213,8 +211,6 @@ defmodule PhoenixKitAgent.Web.Dock.Panel do
 
         <.composer
           upload={@upload}
-          resumable={@resumable}
-          upload_context={@upload_context}
           user_uuid={@user_uuid}
           unsent={@unsent}
           turn_ref={@turn_ref}
@@ -338,8 +334,6 @@ defmodule PhoenixKitAgent.Web.Dock.Panel do
   end
 
   attr(:upload, :any, required: true)
-  attr(:resumable, :map, required: true)
-  attr(:upload_context, :string, required: true)
   attr(:user_uuid, :string, required: true)
   attr(:unsent, :list, required: true)
   attr(:turn_ref, :string, default: nil)
@@ -353,37 +347,15 @@ defmodule PhoenixKitAgent.Web.Dock.Panel do
       phx-change="composer_change"
       class="border-t border-base-300 p-3 space-y-2"
     >
-      <ul :if={@unsent != [] or @upload.entries != []} id="pk-agent-attachments" class="flex flex-wrap gap-1.5">
+      <ul :if={@unsent != []} id="pk-agent-attachments" class="flex flex-wrap gap-1.5">
         <.attachment_chip :for={attachment <- @unsent} attachment={attachment} />
-        <li
-          :for={entry <- @upload.entries}
-          id={"pk-agent-upload-#{entry.ref}"}
-          class="flex items-center gap-2 rounded-box border border-base-300 px-2 py-1 text-xs"
-        >
-          <span class="truncate max-w-[10rem]">{entry.client_name}</span>
-          <progress :if={entry.valid? and not entry.done?} class="progress progress-primary w-12" value={entry.progress} max="100"></progress>
-          <span :if={entry.done?} class="loading loading-spinner loading-xs"></span>
-          <span :for={err <- upload_errors(@upload, entry)} class="text-error">
-            {Texts.upload_error(err)}
-          </span>
-          <%!-- A finished upload is with `Attachments.add/4` already: it is no longer the browser's to cancel --%>
-          <button
-            :if={not entry.done?}
-            type="button"
-            phx-click="cancel_upload"
-            phx-value-ref={entry.ref}
-            class="btn btn-ghost btn-xs btn-circle"
-            aria-label={gettext("Cancel")}
-          >
-            <.icon name="hero-x-mark" class="w-3.5 h-3.5" />
-          </button>
-        </li>
       </ul>
       <p :for={err <- upload_errors(@upload)} class="text-xs text-error">
         {Texts.upload_error(err)}
       </p>
 
       <input type="hidden" name="message[page]" value="" data-pk-agent-page />
+      <input type="hidden" name="message[uploads_waiting]" value="" data-pk-agent-uploads-waiting />
       <%!-- A raw textarea: its hook owns its value (phx-update="ignore") --%>
       <textarea
         id="pk-agent-input"
@@ -396,13 +368,16 @@ defmodule PhoenixKitAgent.Web.Dock.Panel do
         aria-label={gettext("Message")}
         class="textarea textarea-sm w-full resize-none text-sm"
       ></textarea>
-      <.resumable_upload
-        upload={@upload}
-        resumable={@resumable}
-        scope="agent-dock|files"
-        context={@upload_context}
-        user={@user_uuid}
-      >
+      <%!-- The manager listens on the element it is placed in, where the file input is --%>
+      <div id="pk-agent-files">
+        <.upload_manager
+          id="pk-agent-uploads"
+          upload={@upload}
+          layout={:inline}
+          dropzone={false}
+          max_concurrent={3}
+          remember_scope={@user_uuid}
+        />
         <div class="flex items-center gap-2">
           <label
             for={@upload.ref}
@@ -424,17 +399,16 @@ defmodule PhoenixKitAgent.Web.Dock.Panel do
           >
             <.icon name="hero-stop" class="w-4 h-4" /> {gettext("Stop")}
           </button>
-          <%!-- Disabled while a lost upload is set to go on by itself --%>
           <button
             id="pk-agent-send"
             type="submit"
             class="btn btn-sm btn-primary"
-            disabled={!!@turn_ref or @resumable.files.pending}
+            disabled={!!@turn_ref}
           >
             <.icon name="hero-paper-airplane" class="w-4 h-4" /> {gettext("Send")}
           </button>
         </div>
-      </.resumable_upload>
+      </div>
     </form>
     """
   end
@@ -633,6 +607,15 @@ defmodule PhoenixKitAgent.Web.Dock.Panel do
             this.el.form.addEventListener("submit", () => {
               const page = this.el.form.querySelector("[data-pk-agent-page]")
               if (page) page.value = window.location.pathname
+              // Files the upload manager still holds in the browser are no entry
+              // of the server's yet: it is told, and refuses the send.
+              const waiting = this.el.form.querySelector("[data-pk-agent-uploads-waiting]")
+              if (waiting) {
+                const busy = this.el.form.querySelector(
+                  '#pk-agent-uploads li[data-state="queued"], #pk-agent-uploads li[data-state="uploading"]'
+                )
+                waiting.value = busy ? "1" : ""
+              }
             }, true)
           }
           this.handleEvent("pk-agent:sent", () => { this.el.value = "" })

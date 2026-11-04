@@ -26,6 +26,7 @@ defmodule PhoenixKitAgent.Web.DockTest do
   alias PhoenixKitAgent.Test.{Endpoint, Files, LogProbe, Tools}
   alias PhoenixKitAgent.Turns.Monitor
   alias PhoenixKitAgent.Web.Dock
+  alias PhoenixKitWeb.ResumableUpload
 
   @stub __MODULE__
   @model "deepseek/deepseek-v4.1-flash"
@@ -37,11 +38,19 @@ defmodule PhoenixKitAgent.Web.DockTest do
     # Uploaded files go to a bucket in a temporary directory.
     _bucket = Files.local_bucket!()
 
+    # The chunks of a resumable upload are assembled in a temporary directory.
+    parts =
+      Path.join(System.tmp_dir!(), "pk_agent_dock_parts_#{System.unique_integer([:positive])}")
+
+    Application.put_env(:phoenix_kit, :resumable_upload_dir, parts)
+
     Req.Test.set_req_test_to_shared()
     Application.put_env(:phoenix_kit_ai, :req_options, plug: {Req.Test, @stub}, retry: false)
 
     on_exit(fn ->
       stop_all_turns()
+      Application.delete_env(:phoenix_kit, :resumable_upload_dir)
+      File.rm_rf(parts)
       ModuleRegistry.unregister(Tools)
       Application.delete_env(:phoenix_kit_ai, :req_options)
       Application.delete_env(:phoenix_kit_agent, :turn_handshake_ms)
@@ -85,6 +94,38 @@ defmodule PhoenixKitAgent.Web.DockTest do
     |> form("#pk-agent-composer", message: %{text: text})
     |> render_submit(%{message: %{page: page}})
   end
+
+  @modified 1_600_000_000_000
+
+  # `render_upload` does not run the browser's uploader, so a test plays its
+  # part: the file assembled where the server expects it, for the panel's user.
+  defp assemble(view, name, content) do
+    owner = :sys.get_state(view.pid).socket.assigns.user_uuid
+
+    entry = %{
+      client_name: name,
+      client_size: byte_size(content),
+      client_last_modified: @modified
+    }
+
+    socket = %Phoenix.LiveView.Socket{
+      endpoint: Endpoint,
+      assigns: %{__changed__: %{}}
+    }
+
+    {:ok, meta, _} = ResumableUpload.external(owner: fn _ -> owner end).(entry, socket)
+    File.mkdir_p!(Path.dirname(meta.path))
+    File.write!(meta.path, content)
+    meta.path
+  end
+
+  defp pick(view, name, content, type) do
+    file_input(view, "#pk-agent-composer", :files, [
+      %{name: name, content: content, type: type, last_modified: @modified}
+    ])
+  end
+
+  defp upload_entries(view), do: :sys.get_state(view.pid).socket.assigns.uploads.files.entries
 
   defp text_answer(text) do
     %{
@@ -942,9 +983,7 @@ defmodule PhoenixKitAgent.Web.DockTest do
       open_chat(view, ctx.chat)
 
       view
-      |> file_input("#pk-agent-composer", :files, [
-        %{name: "half.txt", content: String.duplicate("a", 4_000), type: "text/plain"}
-      ])
+      |> pick("half.txt", String.duplicate("a", 4_000), "text/plain")
       |> render_upload("half.txt", 50)
 
       send_text(view, "Now")
@@ -953,29 +992,15 @@ defmodule PhoenixKitAgent.Web.DockTest do
       assert messages(ctx.chat) == []
     end
 
-    test "a send while a lost upload is set to go on by itself waits for it", ctx do
+    test "a send while the upload manager still holds a file in the browser waits for it", ctx do
       view = dock(ctx)
       open_chat(view, ctx.chat)
 
-      render_hook(view, "pk_upload_resume", %{
-        "upload" => "files",
-        "items" => [
-          %{
-            "id" => "id-a.txt",
-            "key" => "a.txt|4|7",
-            "seq" => "s-a.txt",
-            "name" => "a.txt",
-            "size" => 4,
-            "context" => ctx.chat.uuid,
-            "has_bytes" => true,
-            "state" => "pending",
-            "attempts" => 0,
-            "fresh" => true
-          }
-        ]
-      })
-
-      send_text(view, "Now")
+      # What the `.Composer` hook adds to the form while the panel lists a file
+      # that is queued or moving: that file is no entry of the server's yet.
+      view
+      |> form("#pk-agent-composer", message: %{text: "Now"})
+      |> render_submit(%{message: %{page: "/en/admin/orders/7", uploads_waiting: "1"}})
 
       assert has_element?(view, "#pk-agent-dock-error", "Wait until the files are read.")
       assert messages(ctx.chat) == []
@@ -1025,10 +1050,10 @@ defmodule PhoenixKitAgent.Web.DockTest do
 
           name = "File-#{secret}.txt"
 
+          assemble(view, name, "Body-" <> secret)
+
           view
-          |> file_input("#pk-agent-composer", :files, [
-            %{name: name, content: "Body-" <> secret, type: "text/plain"}
-          ])
+          |> pick(name, "Body-" <> secret, "text/plain")
           |> render_upload(name)
 
           assert await_files(view) =~ ~s(data-status="ready")
@@ -1370,25 +1395,12 @@ defmodule PhoenixKitAgent.Web.DockTest do
     end
 
     defp upload(view, name, content, type) do
-      input =
-        file_input(view, "#pk-agent-composer", :files, [
-          %{name: name, content: content, type: type}
-        ])
-
-      render_upload(input, name)
+      assemble(view, name, content)
+      view |> pick(name, content, type) |> render_upload(name)
     end
 
     defp attachments_of(chat) do
       Repo.all(from(a in Attachment, where: a.conversation_uuid == ^chat.uuid))
-    end
-
-    defp upload_refs(html) do
-      html
-      |> LazyHTML.from_fragment()
-      |> LazyHTML.query("#pk-agent-attachments li[id^=pk-agent-upload-]")
-      |> Enum.map(fn node ->
-        node |> LazyHTML.attribute("id") |> hd() |> String.replace_prefix("pk-agent-upload-", "")
-      end)
     end
 
     test "a file is added to the open chat, read, and goes with the message", ctx do
@@ -1443,42 +1455,41 @@ defmodule PhoenixKitAgent.Web.DockTest do
 
       {result, logs} =
         LogProbe.capture(fn ->
-          input =
-            file_input(view, "#pk-agent-composer", :files, [
-              %{name: "SecretName.exe", content: "MZ", type: "application/octet-stream"}
-            ])
+          input = pick(view, "SecretName.exe", "MZ", "application/octet-stream")
 
           result = render_upload(input, "SecretName.exe")
-          assert render(view) =~ "text-error"
+          # The upload manager reads the reason from the entry's row.
+          assert has_element?(view, ~s([data-pk-upload-entry][data-error="not_accepted"]))
           # The browser's change event that follows a file pick.
           view |> form("#pk-agent-composer") |> render_change()
           result
         end)
 
-      assert {:error, [[_ref, :not_accepted]]} = result
+      assert {:error, [[_ref, %{reason: :not_accepted}]]} = result
       assert Enum.any?(logs, &(&1 =~ "[PhoenixKitAgent] an upload was refused: :not_accepted"))
       refute Enum.any?(logs, &(&1 =~ "SecretName"))
       assert attachments_of(ctx.chat) == []
     end
 
-    test "a cancel of an upload that is not there changes nothing", ctx do
+    test "the upload manager's cancel takes an upload off; one that is not there changes nothing",
+         ctx do
       view = dock(ctx)
       open_chat(view, ctx.chat)
       monitor = Process.monitor(view.pid)
 
-      input =
-        file_input(view, "#pk-agent-composer", :files, [
-          %{name: "half.txt", content: String.duplicate("a", 4_000), type: "text/plain"}
-        ])
+      view
+      |> pick("half.txt", String.duplicate("a", 4_000), "text/plain")
+      |> render_upload("half.txt", 50)
 
-      render_upload(input, "half.txt", 50)
-      [entry_ref] = view |> render() |> upload_refs()
+      [%{ref: entry_ref}] = upload_entries(view)
 
-      render_click(view, "cancel_upload", %{"ref" => "nope"})
-      render_click(view, "cancel_upload", %{"ref" => entry_ref})
-      render_click(view, "cancel_upload", %{"ref" => entry_ref})
+      render_hook(view, "pk_upload_cancel", %{"ref" => "nope", "name" => "files"})
+      assert [_one] = upload_entries(view)
 
-      refute has_element?(view, "#pk-agent-upload-#{entry_ref}")
+      render_hook(view, "pk_upload_cancel", %{"ref" => entry_ref, "name" => "files"})
+      render_hook(view, "pk_upload_cancel", %{"ref" => entry_ref, "name" => "files"})
+
+      assert upload_entries(view) == []
       refute_received {:DOWN, ^monitor, :process, _, _}
       assert attachments_of(ctx.chat) == []
     end
@@ -1524,16 +1535,16 @@ defmodule PhoenixKitAgent.Web.DockTest do
       assert has_element?(view, "#pk-agent-att-#{att.uuid}")
     end
 
-    test "a cancel of an upload that is with Attachments.add/4 already changes nothing", ctx do
+    test "a cancel of an upload that is with Attachments.add/4 already does not undo the file",
+         ctx do
       view = dock(ctx)
       open_chat(view, ctx.chat)
 
       release = hold_the_database()
       upload(view, "kept.txt", "Kept words", "text/plain")
-      [entry_ref] = view |> render() |> upload_refs()
+      [%{ref: entry_ref}] = upload_entries(view)
 
-      render_click(view, "cancel_upload", %{"ref" => entry_ref})
-      assert has_element?(view, "#pk-agent-upload-#{entry_ref}")
+      render_hook(view, "pk_upload_cancel", %{"ref" => entry_ref, "name" => "files"})
 
       release.()
       render_async(view)
@@ -1548,7 +1559,7 @@ defmodule PhoenixKitAgent.Web.DockTest do
       upload(view, "orphan.txt", "No home", "text/plain")
 
       assert has_element?(view, "#pk-agent-dock-error")
-      assert view |> render() |> upload_refs() == []
+      assert upload_entries(view) == []
       assert [%Conversation{uuid: uuid}] = chats_of(ctx.user)
       assert uuid == ctx.chat.uuid
     end
@@ -1599,148 +1610,81 @@ defmodule PhoenixKitAgent.Web.DockTest do
 
   # ── the feed and its chat ──────────────────────────────────────────
 
-  describe "uploads that survive the camera:" do
+  describe "the upload manager:" do
     setup ctx do
       %{chat: conversation_fixture(ctx.user, %{title: "Photos"})}
     end
 
-    @hook ~s([phx-hook="ResumableUpload"][data-upload="files"])
+    @manager ~s(#pk-agent-uploads[phx-hook="UploadManager"][data-upload-name="files"])
 
-    defp saved_file(name, extra \\ %{}) do
-      Map.merge(
-        %{
-          "id" => "id-" <> name,
-          "key" => name <> "|4|7",
-          "seq" => "s-" <> name,
-          "name" => name,
-          "size" => 4,
-          "context" => nil,
-          "has_bytes" => true,
-          "state" => "pending",
-          "attempts" => 0,
-          "fresh" => true
-        },
-        extra
-      )
-    end
-
-    defp resume(view, items) do
-      render_hook(view, "pk_upload_resume", %{"upload" => "files", "items" => items})
-    end
-
-    test "the file input sits in the hook element, which carries what the files are for", ctx do
-      view = dock(ctx)
-      user = ctx.user.uuid
-      assert has_element?(view, @hook <> ~s([data-scope="agent-dock|files"]))
-      assert has_element?(view, @hook <> ~s([data-user="#{user}"][data-context="new:#{user}"]))
-      assert has_element?(view, @hook <> " input[type=file]")
-
-      open_chat(view, ctx.chat)
-      assert has_element?(view, @hook <> ~s([data-context="#{ctx.chat.uuid}"]))
-    end
-
-    test "a fresh file of the open chat goes on by itself, and Send waits for it", ctx do
-      view = dock(ctx)
-      open_chat(view, ctx.chat)
-      refute has_element?(view, "#pk-agent-send[disabled]")
-
-      resume(view, [saved_file("a.txt", %{"context" => ctx.chat.uuid})])
-
-      assert_reply(view, %{auto: ["id-a.txt"], ask: [], drop: []})
-      assert has_element?(view, "#pk-agent-send[disabled]")
-    end
-
-    test "a file picked with no chat open goes on by itself while none is open", ctx do
+    test "the composer renders the manager around the file input, resumable", ctx do
       view = dock(ctx)
 
-      resume(view, [saved_file("a.txt", %{"context" => "new:" <> ctx.user.uuid})])
-
-      assert_reply(view, %{auto: ["id-a.txt"], ask: []})
+      assert has_element?(view, @manager <> ~s([data-resumable="true"]))
+      # The manager listens on the element it sits in, where the input is.
+      assert has_element?(view, "#pk-agent-files input[type=file]")
+      assert is_function(:sys.get_state(view.pid).socket.assigns.uploads.files.external)
     end
 
-    test "a file of another chat, of a new chat while one is open, or of nowhere asks", ctx do
-      other = conversation_fixture(ctx.user, %{title: "Other"})
-      view = dock(ctx)
-      open_chat(view, ctx.chat)
-
-      items = [
-        saved_file("a.txt", %{"context" => other.uuid}),
-        saved_file("b.txt", %{"context" => "new:" <> ctx.user.uuid}),
-        saved_file("c.txt", %{"context" => "new:" <> Ecto.UUID.generate()}),
-        saved_file("d.txt")
-      ]
-
-      resume(view, items)
-
-      assert_reply(view, %{auto: [], ask: ask})
-      assert Enum.sort(ask) == ["id-a.txt", "id-b.txt", "id-c.txt", "id-d.txt"]
-      refute has_element?(view, "#pk-agent-send[disabled]")
-    end
-
-    test "a file the server already received asks, however fresh", ctx do
-      view = dock(ctx)
-      open_chat(view, ctx.chat)
-
-      resume(view, [saved_file("a.txt", %{"context" => ctx.chat.uuid, "state" => "received"})])
-
-      assert_reply(view, %{auto: [], ask: ["id-a.txt"]})
-    end
-
-    test "the browser is told when a file is kept, only then", ctx do
+    test "the file travels as a chunked upload of the panel's user", ctx do
       view = dock(ctx)
       open_chat(view, ctx.chat)
 
       upload(view, "notes.txt", "Shelf height 2.1 m", "text/plain")
-      assert_push_event(view, "pk-upload-received", %{upload: "files", key: key})
-      refute_push_event(view, "pk-upload-stored", %{key: ^key}, 0)
 
-      render_async(view)
-      assert_push_event(view, "pk-upload-stored", %{upload: "files", key: ^key})
+      # Assembled for that user and no one else: the file was found at all.
+      assert await_files(view) =~ ~s(data-status="ready")
       assert [%Attachment{filename: "notes.txt"}] = attachments_of(ctx.chat)
     end
 
-    test "a refusal for good is told to the browser too", ctx do
+    test "the assembled file is removed once the file is added", ctx do
       view = dock(ctx)
       open_chat(view, ctx.chat)
 
-      upload(view, "table.csv", <<0xFF, 0xFE, ?a, 0, ?b, 0>>, "text/csv")
-      assert_push_event(view, "pk-upload-received", %{key: key})
+      path = assemble(view, "notes.txt", "Shelf height 2.1 m")
+      view |> pick("notes.txt", "Shelf height 2.1 m", "text/plain") |> render_upload("notes.txt")
+      await_files(view)
 
-      render_async(view)
-      assert_push_event(view, "pk-upload-rejected", %{upload: "files", key: ^key})
-      refute_push_event(view, "pk-upload-stored", %{key: ^key}, 0)
+      refute File.exists?(path)
     end
 
-    test "a failure of the moment tells the browser nothing, so the file comes back", ctx do
+    test "an entry reported done with a partial file is not added, and the panel lives on", ctx do
       view = dock(ctx)
       open_chat(view, ctx.chat)
+      monitor = Process.monitor(view.pid)
 
-      # The bounds are read as the file is added: a malformed override raises there.
-      Application.put_env(:phoenix_kit_agent, :attachment_limits, "broken")
-      on_exit(fn -> Application.delete_env(:phoenix_kit_agent, :attachment_limits) end)
+      path = assemble(view, "notes.txt", "Shelf height 2.1 m")
+      File.write!(path, "Shelf")
 
-      upload(view, "notes.txt", "text", "text/plain")
-      assert_push_event(view, "pk-upload-received", %{key: key})
+      view |> pick("notes.txt", "Shelf height 2.1 m", "text/plain") |> render_upload("notes.txt")
+      await_files(view)
 
-      assert render_async(view) =~ "pk-agent-dock-error"
-      refute_push_event(view, "pk-upload-stored", %{key: ^key}, 0)
-      refute_push_event(view, "pk-upload-rejected", %{key: ^key}, 0)
+      assert attachments_of(ctx.chat) == []
+      assert upload_entries(view) == []
+      assert File.exists?(path)
+      refute_received {:DOWN, ^monitor, :process, _, _}
     end
 
-    test "a file LiveView turns away is told to the browser and keeps its chip with the reason",
-         ctx do
+    test "a file no chat can be made for leaves its assembled file for a later try", ctx do
+      view = dock(ctx)
+      :ok = Permissions.revoke_permission(ctx.role.uuid, "agent")
+
+      path = assemble(view, "orphan.txt", "No home")
+      view |> pick("orphan.txt", "No home", "text/plain") |> render_upload("orphan.txt")
+
+      assert has_element?(view, "#pk-agent-dock-error")
+      assert File.exists?(path)
+    end
+
+    test "a file LiveView turns away stays on the panel with its reason", ctx do
       view = dock(ctx)
       open_chat(view, ctx.chat)
 
-      input =
-        file_input(view, "#pk-agent-composer", :files, [
-          %{name: "tool.exe", content: "MZ", type: "application/octet-stream"}
-        ])
+      view
+      |> pick("tool.exe", "MZ", "application/octet-stream")
+      |> render_upload("tool.exe")
 
-      render_upload(input, "tool.exe")
-
-      assert_push_event(view, "pk-upload-rejected", %{upload: "files"})
-      assert has_element?(view, "#pk-agent-attachments li[id^=pk-agent-upload-] .text-error")
+      assert has_element?(view, ~s([data-pk-upload-entry][data-error="not_accepted"]))
       assert attachments_of(ctx.chat) == []
     end
   end
