@@ -118,6 +118,22 @@ defmodule PhoenixKitAgent.Web.Dock do
   dropped (`keep_finished_upload/3`), `add/4` removes the entry and its file.
   An exception in `add/4` is caught in its task and logged as its class only.
 
+  ## Speaking instead of typing
+
+  Where voice input is on (`PhoenixKitAgent.Config.speech?/0`) and the core has
+  the recorder (`PhoenixKitWeb.Components.Core.AudioRecorder`), the composer has
+  a microphone. A clip it delivers (`{:audio_recorded, "pk-agent-mic", clip}`)
+  is written down (`PhoenixKitAgent.Speech.transcribe/4`, with the panel's
+  session; it runs off this process, one at a time, and the recorder is busy
+  meanwhile; the call runs in a task of the module's supervisor, not linked
+  to the panel, so a closed tab does not cut a paid call short before it is
+  journaled; the panel gives up waiting after `:speech_wait_ms`, default two
+  minutes) and the words are **put into the composer** (`pk-agent:dictated`,
+  the `.Composer` hook adds them to what is typed): the person reads and edits
+  them, and sends. Nothing is sent, and nothing kept, by the recognition. A
+  refusal is shown with `PhoenixKitAgent.Web.Dock.Texts.speech_error/1`; the
+  clip and the words are not logged.
+
   ## In the browser
 
   The panel opens with the class `pk-dock-open` on `<body>`
@@ -164,13 +180,29 @@ defmodule PhoenixKitAgent.Web.Dock do
   alias PhoenixKit.Modules.Storage
   alias PhoenixKit.Users.Auth.SessionRef
   alias PhoenixKit.Utils.IpAddress
-  alias PhoenixKitAgent.{Attachments, Config, Confirmations, Conversations, Turns, UserConfig}
+
+  alias PhoenixKitAgent.{
+    Attachments,
+    Config,
+    Confirmations,
+    Conversations,
+    Speech,
+    Turns,
+    UserConfig
+  }
+
   alias PhoenixKitAgent.Schemas.{Message, UserSettings}
   alias PhoenixKitAgent.Turns.Monitor
   alias PhoenixKitAgent.Web.Dock.{Panel, Texts}
   alias PhoenixKitWeb.Components.Core.UploadManager
   alias PhoenixKitWeb.ResumableUpload
   alias PhoenixKitWeb.Users.MultiSession
+
+  # The core's recorder, where the core has it (the module supports cores before
+  # it); `config :phoenix_kit_agent, :audio_recorder` stands in for it in tests.
+  @recorder PhoenixKitWeb.Components.Core.AudioRecorder
+  # How long the panel waits for a recording to be written down.
+  @speech_wait_ms 120_000
 
   # `image/*` next to the extensions: a camera picture reaches the browser by
   # its MIME type, and its name may carry no listed extension. What the file
@@ -240,6 +272,10 @@ defmodule PhoenixKitAgent.Web.Dock do
         restored: 0,
         entry_chats: %{},
         upload_errors_seen: MapSet.new(),
+        speech?: speech?(),
+        transcribing?: false,
+        speech_ref: nil,
+        speech_timer: nil,
         timeout_ms: Config.turn_deadline_s() * 1_000 + Monitor.stop_grace_ms() + @wait_margin_ms
       )
       |> attach_hook(:pk_agent_finished_upload, :handle_event, &keep_finished_upload/3)
@@ -258,6 +294,13 @@ defmodule PhoenixKitAgent.Web.Dock do
       _not_this_session -> socket
     end
   end
+
+  defp speech?, do: Config.speech?() and Code.ensure_loaded?(recorder())
+
+  defp recorder, do: Application.get_env(:phoenix_kit_agent, :audio_recorder, @recorder)
+
+  defp speech_wait_ms,
+    do: Application.get_env(:phoenix_kit_agent, :speech_wait_ms, @speech_wait_ms)
 
   # The panel's own texts and core's components in it (the times of the list).
   defp put_locale(locale) do
@@ -997,7 +1040,54 @@ defmodule PhoenixKitAgent.Web.Dock do
       {:error, :storage_unavailable}
   end
 
+  # An exception in the recognition would end the async task with a crash
+  # report that holds its terms (the recording): only its class is logged.
+  defp safe_transcribe(ref, data, format, opts) do
+    Speech.transcribe(ref, data, format, opts)
+  rescue
+    exception ->
+      Logger.warning(
+        "[PhoenixKitAgent] the chat panel could not write a recording down: #{inspect(exception.__struct__)}"
+      )
+
+      {:error, :failed}
+  catch
+    kind, _reason ->
+      Logger.warning("[PhoenixKitAgent] the chat panel could not write a recording down: #{kind}")
+      {:error, :failed}
+  end
+
+  # The words reach the composer; a result that comes after the panel gave up
+  # waiting (or for a clip it no longer waits for) is let go.
+  defp dictated(_result, %{assigns: %{transcribing?: false}} = socket), do: {:noreply, socket}
+
+  defp dictated({:ok, {:ok, text}}, socket),
+    do: {:noreply, socket |> speech_done() |> push_event("pk-agent:dictated", %{text: text})}
+
+  defp dictated({:ok, {:error, reason}}, socket),
+    do: {:noreply, socket |> speech_done() |> assign(error: Texts.speech_error(reason))}
+
+  defp dictated({:exit, _reason}, socket),
+    do: {:noreply, socket |> speech_done() |> assign(error: Texts.speech_error(:failed))}
+
+  defp speech_done(socket) do
+    if timer = socket.assigns.speech_timer, do: Process.cancel_timer(timer)
+    assign(socket, transcribing?: false, speech_ref: nil, speech_timer: nil)
+  end
+
+  # Whatever goes wrong in showing the result, the microphone is free again.
+  defp safe_dictated(result, socket) do
+    dictated(result, socket)
+  rescue
+    exception ->
+      Logger.warning("[PhoenixKitAgent] the chat panel failed: #{inspect(exception.__struct__)}")
+      {:noreply, socket |> speech_done() |> assign(error: Texts.speech_error(:failed))}
+  end
+
   @impl true
+  def handle_async(:speech, result, socket),
+    do: guarded(socket, fn -> safe_dictated(result, socket) end)
+
   def handle_async({:card, uuid}, result, socket),
     do: guarded(socket, fn -> card_done(uuid, result, socket) end)
 
@@ -1133,6 +1223,32 @@ defmodule PhoenixKitAgent.Web.Dock do
       do: {:noreply, refresh_attachment(socket, attachment_uuid)},
       else: {:noreply, socket}
   end
+
+  # A clip of the microphone: written down off this process, one at a time.
+  defp info(
+         {:audio_recorded, "pk-agent-mic", %{data: data, format: format}},
+         %{assigns: %{speech?: true, transcribing?: false}} = socket
+       )
+       when is_binary(data) and is_binary(format) do
+    %{ref: ref} = socket.assigns
+    deadline = System.monotonic_time(:millisecond) + speech_wait_ms()
+    opts = Keyword.put(me(socket), :deadline, deadline)
+    wait = make_ref()
+    timer = Process.send_after(self(), {:pk_agent_speech_timeout, wait}, speech_wait_ms())
+
+    {:noreply,
+     socket
+     |> assign(transcribing?: true, speech_ref: wait, speech_timer: timer, error: nil)
+     |> start_async(:speech, fn ->
+       detached(fn -> safe_transcribe(ref, data, format, opts) end)
+     end)}
+  end
+
+  # The panel gives up waiting (the task goes on, and is journaled).
+  defp info({:pk_agent_speech_timeout, wait}, %{assigns: %{speech_ref: wait}} = socket),
+    do: {:noreply, socket |> speech_done() |> assign(error: Texts.speech_error(:failed))}
+
+  defp info({:pk_agent_speech_timeout, _stale}, socket), do: {:noreply, socket}
 
   defp info(_other, socket), do: {:noreply, socket}
 
@@ -1313,8 +1429,9 @@ defmodule PhoenixKitAgent.Web.Dock do
   defp card_action("reject_card"), do: :reject
   defp card_action("repeat_card"), do: :repeat
 
-  # The click runs in a task of the module's supervisor, not linked to the
-  # panel: a closed tab does not stop a write half-way. An exception in it is
+  # The click (or a recording being written down) runs in a task of the
+  # module's supervisor, not linked to the panel: a closed tab does not stop a
+  # write half-way, nor a paid call before it is journaled. An exception in it is
   # logged as its class only (its terms may hold the arguments).
   defp detached(fun) do
     PhoenixKitAgent.Confirmations.TaskSupervisor
@@ -1441,6 +1558,8 @@ defmodule PhoenixKitAgent.Web.Dock do
       instructions_form={@instructions_form}
       unsent={@unsent}
       upload={@uploads.files}
+      speech?={@speech?}
+      transcribing?={@transcribing?}
     />
     """
   end

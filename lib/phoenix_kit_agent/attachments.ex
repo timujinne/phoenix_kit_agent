@@ -81,8 +81,11 @@ defmodule PhoenixKitAgent.Attachments do
   `:empty_file`, `:too_large`, `:unsupported_type`, `:unsupported_encoding` (a
   text, CSV or Markdown file that is not UTF-8: save it as UTF-8),
   `:no_vision_model`, `:too_many`, `:storage_unavailable`, `:already_sent`.
-  A linked Telegram chat (the `{:telegram_link, …}` reference) attaches nothing:
-  every function here is `{:error, :not_in_telegram}` for it.
+  A linked Telegram chat (the `{:telegram_link, …}` reference) attaches nothing
+  through these functions: each is `{:error, :not_in_telegram}` for it. The
+  bridge has its own entry points (`add_picture_for_telegram/3`,
+  `get_for_telegram/2`, `discard_for_telegram/2`, below), which are for a
+  picture the bot downloaded, never for a client's event.
 
   A row that is still `pending` after the processing deadline and a margin (the
   node was restarted, the task was lost) is settled as `failed`/`timeout` the
@@ -104,6 +107,11 @@ defmodule PhoenixKitAgent.Attachments do
 
   @mb 1_048_576
   @name_chars 200
+  # The name every picture of a Telegram chat is stored under (the name Telegram
+  # gives is the sender's, and a document's would be shown to the model): it marks
+  # the files the bridge added, which `sweep_unsent_for_telegram/3` may remove
+  # and a panel upload in the same conversation is never taken for.
+  @telegram_picture "telegram-picture"
   # A `pending` row older than the processing deadline by this much is lost.
   @stale_margin_ms 60_000
 
@@ -147,13 +155,18 @@ defmodule PhoenixKitAgent.Attachments do
   def add({:telegram_link, _user, _connection, _chat}, _, _, _),
     do: {:error, :not_in_telegram}
 
-  def add(session_ref, conversation_uuid, upload, opts) do
+  def add(session_ref, conversation_uuid, upload, opts),
+    do: add_checked(session_ref, conversation_uuid, upload, opts, nil)
+
+  # `only`: the one kind of file taken (`nil`: any the module reads).
+  defp add_checked(session_ref, conversation_uuid, upload, opts, only) do
     with {:ok, conversation} <-
            Conversations.owned_conversation(session_ref, conversation_uuid, opts),
          {:ok, source} <- readable(upload),
          settings = UserConfig.effective(conversation.user_uuid),
          :ok <- size_allowed(source.size, settings),
          {:ok, detected} <- Detect.detect(source.path, source.filename),
+         :ok <- only_kind(detected, only),
          :ok <- can_be_shown(detected, settings),
          :ok <- settle_stale(conversation.user_uuid),
          {:ok, attachment} <- reserve(conversation, source, detected, settings),
@@ -162,6 +175,10 @@ defmodule PhoenixKitAgent.Attachments do
       {:ok, attachment}
     end
   end
+
+  defp only_kind(_detected, nil), do: :ok
+  defp only_kind(%{kind: kind}, kind), do: :ok
+  defp only_kind(_detected, _only), do: {:error, :unsupported_type}
 
   defp readable(%{path: path, filename: filename}) when is_binary(path) and is_binary(filename) do
     case File.stat(path) do
@@ -408,6 +425,120 @@ defmodule PhoenixKitAgent.Attachments do
     :ok
   end
 
+  @doc false
+  # A picture the bot downloaded from a linked Telegram chat, added to the chat's
+  # Telegram conversation as the panel's upload would be (the same checks, the
+  # same storage and processing, the same limits; the uploader is the linked
+  # user). Only a picture is taken: the content decides, so a document that
+  # says it is an image and is not is `:unsupported_type`. `bytes` are written
+  # to a private scratch file here, and it is stored under a name of its own.
+  # A trusted entry point of the bridge.
+  @spec add_picture_for_telegram(Conversations.session_ref(), term(), binary()) ::
+          {:ok, Attachment.t()} | {:error, refusal()}
+  def add_picture_for_telegram(
+        {:telegram_link, _user, _connection, _chat} = ref,
+        conversation_uuid,
+        bytes
+      )
+      when is_binary(bytes) do
+    Work.with_dir(fn dir ->
+      path = Path.join(dir, "upload")
+
+      case File.write(path, bytes) do
+        :ok ->
+          add_checked(
+            ref,
+            conversation_uuid,
+            %{path: path, filename: @telegram_picture},
+            [impersonated: false],
+            "image"
+          )
+
+        {:error, _reason} ->
+          {:error, :file_unreadable}
+      end
+    end)
+  end
+
+  @doc false
+  # What `add_picture_for_telegram/3` can refuse without the bytes — the chat,
+  # the user's size limit (`size`, where Telegram said it) and a model that
+  # could neither see nor describe a picture — so the bridge asks before it
+  # downloads. `:ok`, or the refusal. A trusted entry point of the bridge.
+  @spec precheck_picture_for_telegram(
+          Conversations.session_ref(),
+          term(),
+          non_neg_integer() | nil
+        ) :: :ok | {:error, refusal()}
+  def precheck_picture_for_telegram(
+        {:telegram_link, _user, _connection, _chat} = ref,
+        conversation_uuid,
+        size
+      ) do
+    with {:ok, conversation} <-
+           Conversations.owned_conversation(ref, conversation_uuid, impersonated: false),
+         settings = UserConfig.effective(conversation.user_uuid),
+         :ok <- room_for_one(settings),
+         :ok <- if(is_integer(size), do: size_allowed(size, settings), else: :ok) do
+      can_be_shown(%{kind: "image"}, settings)
+    end
+  end
+
+  defp room_for_one(settings),
+    do: if(settings.max_attachments_per_message < 1, do: {:error, :too_many}, else: :ok)
+
+  @doc false
+  # Removes the pictures the bridge added (`add_picture_for_telegram/3`) to the
+  # Telegram chat's conversation that no message took and that are older than
+  # `older_than_ms`: what a turn killed between adding a picture and asking
+  # about it left behind (they would count against
+  # `max_attachments_per_message`). A file the user attached in the panel to the
+  # same conversation is never touched. A trusted entry point of the bridge.
+  @spec sweep_unsent_for_telegram(Conversations.session_ref(), term(), non_neg_integer()) ::
+          :ok | {:error, refusal()}
+  def sweep_unsent_for_telegram(
+        {:telegram_link, _user, _connection, _chat} = ref,
+        conversation_uuid,
+        older_than_ms
+      ) do
+    with {:ok, conversation} <-
+           Conversations.owned_conversation(ref, conversation_uuid, impersonated: false) do
+      cutoff = DateTime.add(DateTime.utc_now(), -older_than_ms, :millisecond)
+
+      from(a in Attachment,
+        where:
+          a.conversation_uuid == ^conversation.uuid and a.user_uuid == ^conversation.user_uuid and
+            is_nil(a.message_uuid) and a.filename == ^@telegram_picture and
+            a.inserted_at < ^cutoff,
+        select: a.uuid
+      )
+      |> repo().all()
+      |> Enum.each(&discard_row(conversation.user_uuid, &1))
+    end
+  end
+
+  @doc false
+  # `get/3` for a linked Telegram chat's reference (the bridge waits for a
+  # picture to be read with it).
+  @spec get_for_telegram(Conversations.session_ref(), term()) ::
+          {:ok, Attachment.t()} | {:error, refusal()}
+  def get_for_telegram({:telegram_link, _user, _connection, _chat} = ref, attachment_uuid) do
+    with {:ok, user_uuid} <- Conversations.authorize_session(ref, impersonated: false),
+         :ok <- settle_stale(user_uuid) do
+      fetch(user_uuid, attachment_uuid)
+    end
+  end
+
+  @doc false
+  # `discard/3` for a linked Telegram chat's reference: a picture the turn did
+  # not take stays in a chat nobody sees the files of, so the bridge removes it.
+  @spec discard_for_telegram(Conversations.session_ref(), term()) :: :ok | {:error, refusal()}
+  def discard_for_telegram({:telegram_link, _user, _connection, _chat} = ref, attachment_uuid) do
+    with {:ok, user_uuid} <- Conversations.authorize_session(ref, impersonated: false) do
+      discard_row(user_uuid, attachment_uuid)
+    end
+  end
+
   # ── reading ─────────────────────────────────────────────────────────
 
   @doc "The session user's attachment `attachment_uuid`."
@@ -493,7 +624,11 @@ defmodule PhoenixKitAgent.Attachments do
 
   def discard(session_ref, attachment_uuid, opts) do
     with {:ok, user_uuid} <- Conversations.authorize_session(session_ref, opts),
-         {:ok, attachment} <- fetch(user_uuid, attachment_uuid) do
+         do: discard_row(user_uuid, attachment_uuid)
+  end
+
+  defp discard_row(user_uuid, attachment_uuid) do
+    with {:ok, attachment} <- fetch(user_uuid, attachment_uuid) do
       {count, _} =
         repo().delete_all(
           from(a in Attachment,

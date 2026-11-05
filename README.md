@@ -235,6 +235,41 @@ PDF processing needs poppler (`pdfinfo`, `pdftotext`, `pdftoppm`) and pictures
 need ImageMagick (`convert`, `identify`) on the host; without them such a file
 fails with `pdf_tools_missing` / `image_tools_missing`, nothing else breaks.
 
+## Pictures from Telegram
+
+A photo, or a jpeg, png or webp sent as a file, in the private chat of a linked
+person is added to their Telegram conversation as a picture is added in the
+panel (same limits, same storage; the model sees it, or the vision model
+describes it, or — with neither — the person is told that pictures cannot be
+read). The caption is the question; without one the bot asks "What is in this
+picture?". The pictures of one album (several photos sent together) are one
+question: one answer. PDFs and sheets are not taken from Telegram.
+
+## Voice
+
+With a **speech recognition model** chosen on Settings → AI Agent (any
+`phoenix_kit_ai` endpoint whose model takes audio, for example Gemini Flash;
+none chosen = voice is off) and a `phoenix_kit_ai` that has `transcribe/3`
+(feature-detected), people can speak instead of typing:
+
+  * **Telegram.** A voice message or an audio file in the private chat of a
+    linked person is written down; the bot sends "🎙 Recognised: …" and then
+    answers the words exactly as it would a typed message (the same queue of
+    the chat, the same 👀 / 👍 / 🤷). A recording of more than two minutes or ten
+    megabytes, one from a chat that may not use the assistant in Telegram, or
+    one the model finds no speech in is refused with a text, and no turn is
+    started. The file is downloaded only after those checks, through core's
+    `PhoenixKit.Integrations.Telegram.download_file/3`.
+  * **The chat panel.** A microphone (core's `<.audio_recorder>`) sits next to
+    the composer, when the core has it. The recording is written down and the
+    words are put into the composer, to be edited and sent by the person.
+
+A recognition is the user's own call: it passes `user_uuid:`, `source: "agent"`
+and the task `agent.speech`, so it is in the AI journal and counts in the
+person's spending; it is refused before it is paid for a user over a money
+limit (the day's turn limit counts turns, which a recognition is not, but is
+checked as a turn is). The words and the audio are neither kept nor logged.
+
 ## Limits
 
 Per user, the user's own value else the module default (Settings → AI Agent):
@@ -270,9 +305,10 @@ chat says the budget is used up.
 
 ## The AI task guard
 
-The module declares two AI tasks of `phoenix_kit_ai` (`ai_tasks/0`):
-`agent.chat` (the calls of a turn; needs tools) and `agent.attachment` (a
-picture described by the vision model; needs images in). Both are private
+The module declares three AI tasks of `phoenix_kit_ai` (`ai_tasks/0`):
+`agent.chat` (the calls of a turn; needs tools), `agent.attachment` (a
+picture described by the vision model; needs images in) and `agent.speech` (a
+recording written down; needs audio in). All are private
 (the reasons of their flags and blocks are shown only to holders of
 `ai.manage`), share the block group `free_text` with the AI Playground, and
 have no per-user limits in the guard (`user_limits: false`): the module's
@@ -348,9 +384,10 @@ as it is now — the role it acts as, a logout — not the user's default role. 
 Owner's assistant settings are changed by an Owner only, and a settings form
 opened before another admin's save does not overwrite it.
 
-Settings → AI Agent sets the module defaults: the default model and the vision
-model (among the `phoenix_kit_ai` endpoints that chat; the default's list marks
-the models without tools, the vision model's the ones that take no pictures),
+Settings → AI Agent sets the module defaults: the default model, the vision
+model and the speech recognition model (among the `phoenix_kit_ai` endpoints
+that chat; the default's list marks the models without tools, the vision model's
+the ones that take no pictures, the speech model's the ones that take no audio),
 the per-user limits, the limits of one turn, the module's prompt (its change is
 recorded in the Activity log by field name, never its text) and who is told
 about limits (none chosen: every Owner). A user without a model of their own,

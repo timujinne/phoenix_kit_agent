@@ -54,7 +54,8 @@ and `Web.Markdown`).
   ref until one ships, and goes back to a Hex requirement whose floor is that
   release; a module with a git dependency cannot be published to Hex),
   `phoenix_kit_ai` `~> 0.26` (the AI task guard, tool calling, a call's
-  cost from one place, `Request.cost` in dollars), `phoenix_live_view`, and
+  cost from one place, `Request.cost` in dollars; `transcribe/3`, optional,
+  for voice), `phoenix_live_view`, and
   `mdex` (already phoenix_kit's) for the markdown of the chat panel.
 - **Module key** `"agent"`; settings prefix `agent_`; tables
   `phoenix_kit_agent_*` (marker `pk_agent_schema:<N>` on
@@ -271,6 +272,95 @@ and `Web.Markdown`).
   a new choice; the lift of a block goes through `Web.Access` and then
   `Guard.unblock/3` with the session's scope (the guard decides own and
   Owner blocks).
+- **Voice** (`PhoenixKitAgent.Speech`): a recording is written down by the
+  speech model (`agent_speech_endpoint_uuid`, `Config.put_speech_endpoint/2`,
+  the AI task `agent.speech`, needs `[:audio_input]`; validated like the vision
+  model on Settings → AI Agent). `Config.speech?/0` is the one question —
+  `Config.transcribe?/0` (`PhoenixKitAI.transcribe/3` exists: feature-detected,
+  since the requirement of `phoenix_kit_ai` is below the first release with it;
+  `config :phoenix_kit_agent, :speech_ai` stands in for the module in tests)
+  and a model is chosen; empty = voice off everywhere. On an AI module without
+  it Settings does not offer the speech select (it says voice needs a newer AI
+  module) and refuses a forged field; a capabilities map without the
+  `audio_input` key is `:unknown` for the model (`Models.flag_support/2`, never
+  `Map.fetch!`). `Speech.transcribe/4` takes a
+  session reference (a site session or a Telegram chat, `impersonated:` in the
+  options), never a uuid: it checks the AI module, the session as
+  `Conversations.authorize_session/2` does, the size (10 MB) and the user's
+  limits (`use: :speech`) — `Speech.check/2` — and asks them **again** under a
+  `:global` lock per user, right before paying, so each sees what the last cost
+  and a session, a link or a limit that went while it waited is seen. It calls with `user_uuid:`, `source: "agent"`, `task:
+  "agent.speech"`, `capture_request_content: false`, `cache: false`; the result
+  is `{:ok, text}` or a code (`:speech_off`, `:no_speech`, `:too_long`,
+  `:unfit`, `:budget_exceeded`, `:task_blocked`, `:rate_limited`, `:failed`, …,
+  texts in `Web.Dock.Texts.speech_error/1`, the guard's and the provider's
+  refusals worded as for a turn). Neither
+  the audio nor the words are logged or kept. **Telegram:** a `voice` or `audio`
+  message (audio files are accepted as well as voice messages) of a linked, fresh, private, non-forwarded chat is a `:voice` job in
+  the same `ChatQueue` (its place keeps the order); `Telegram.Turn` checks the
+  speech model, the chat's link and rights (`Conversations.authorize_session/2`,
+  so `agent.telegram`) the user's limits (`Speech.check/2`) and the length (120 s,
+  Telegram's `duration`; a message with none relies on the 10 MB bound) and
+  size (10 MB) **before** the
+  download (`Client.download_file/3` → core's `Telegram.download_file/3`,
+  `{:error, :unavailable}` on a core without it; `Client.can_download?/0` says
+  so up front: such a core's voice and pictures are `text_only` and the help
+  text has no voice line), then sends "🎙 Recognised: …"
+  (`typing` is sent every 4 s while it recognises, as in a turn)
+  and runs the normal `:turn` with the text; any error is a `Texts.speech/1`
+  text and 🤷, no turn. **Panel:** the microphone is core's
+  `PhoenixKitWeb.Components.Core.AudioRecorder` (named as an atom in the
+  template and `Code.ensure_loaded?`-checked, since older cores lack it), id
+  `pk-agent-mic`; `{:audio_recorded, "pk-agent-mic", clip}` goes through
+  `info/2` (so `guarded/2`) into `start_async(:speech, …)`, whose function runs the call with `detached/1`
+  (a task of `Confirmations.TaskSupervisor`, not linked to the panel: a closed
+  tab does not cut a paid call short before it is journaled) under
+  `safe_transcribe/4` (logs the class only); the panel waits `:speech_wait_ms`
+  (2 minutes), then frees the microphone and a late answer is let go; the words reach the composer as the push event
+  `pk-agent:dictated` (the textarea is `phx-update="ignore"`) and nothing is
+  sent by itself.
+- **Pictures from Telegram:** a `photo` (the largest size of up to 10 MB, by
+  its `file_size`, not its place in the list), or a
+  `document` whose type is image/jpeg, png or webp, of a linked, fresh,
+  private, non-forwarded chat is a `:photo` job (the caption is its text; its
+  `media_group_id` the job's `group`). `Telegram.Turn` checks the chat as for
+  text (`Conversations.authorize_session/2`, before "👀") and, for each
+  picture, what can be known without the file
+  (`Attachments.precheck_picture_for_telegram/3`: the size limit, a model that
+  could neither see nor describe), then downloads it
+  (`Client.download_file/3`, 10 MB), and adds it with the **only** attachment
+  entry point open to a chat: `Attachments.add_picture_for_telegram/3` — the
+  panel's `add/4` flow unchanged (ownership, size, `Detect` by content, only a
+  picture is taken: a "picture" that is a PDF is `:unsupported_type`, quotas,
+  Library, `Processor`, `Jpeg.strip_metadata`, `picture_mode/1`: pixels, a
+  description, or `:no_vision_model` before anything is stored), the bytes
+  written to a `Work` scratch directory. The pictures are added **one at a
+  time**, each read (`get_for_telegram/2`, `Attachments.TaskSupervisor`
+  events or a poll every second, "typing" every 4 s) before the next, so the
+  places for descriptions are free in turn; the whole wait is bounded by
+  `Bounds` queue wait + process deadline + 10 s (`:telegram_attachment_wait_ms`
+  in tests). What no message took is removed by `discard_for_telegram/2` (a
+  chat has no panel to discard in) whatever ends the turn (`try … after`); a
+  turn killed outright cannot, so `sweep_unsent_for_telegram/3` removes the
+  chat's unsent pictures older than that wait bound + 5 s before the next
+  picture (they would count against `max_attachments_per_message`); only the
+  files the bridge added, which are all stored under the name
+  `telegram-picture` (the sender's file name is not kept), never a panel upload
+  to the same conversation. The turn runs on the
+  caption, else "What is in this picture?" in the user's language. The
+  pictures of one album are **one turn**: the album's parts are siblings of a
+  job of the same group that runs **or waits** in `ChatQueue` (not counted
+  among the 3 waiting ones, at most nine; so a part of an album that comes while a job of its album runs or waits is not told "wait a little"); the first
+  picture's job waits `:telegram_album_settle_ms` (1 s) and takes the siblings
+  (`take_siblings/3`; a waiting job gets its own when it starts; siblings not
+  taken run as one job in front of the waiting ones). A part that comes after
+  the siblings were taken is a job of its own with its own answer. A refused
+  album (the chat's rights) is refused once. At most
+  `max_attachments_per_message` pictures go in, the first ones; one short
+  message tells how many were left out and how many could not be read.
+  Other documents (PDF, sheets) stay refused as text only (the help and the
+  refusal say what the bot reads: text, pictures, and voice messages where they
+  are on).
 - **A linked Telegram chat** is the second kind of actor reference,
   `{:telegram_link, user_uuid, connection_uuid, chat_id}` (core's
   `Linking.actor_ref/2`, built from an update read at the bot, never from a
@@ -291,8 +381,8 @@ and `Web.Markdown`).
   the cards) follows that one answer; without it a chat reads only (no `allow:
   :all`, no `via:`, core's own "telegram"). `Prompt` gets `channel: :telegram`
   (plain text, absolute links, and the chat's rule on changes instead of the
-  site's write rule). `Attachments` refuses a chat with `:not_in_telegram`,
-  and so does `Confirmations` for everything but the presses below.
+  site's write rule). `Attachments` refuses a chat with `:not_in_telegram` (but for the
+  bridge's pictures, below), and so does `Confirmations` for everything but the presses below.
   Limits, locks and the user's
   own model, instructions and spending are the user's, as for the panel. The
   trusted entry points of a bridge, which take no session and are never for a
@@ -324,7 +414,7 @@ and `Web.Markdown`).
   only a private text message of a chat `Linking.chat_for_update/1` knows, not
   older than 10 minutes; `/start <anything>` never reaches the agent (core's),
   bare `/start` and `/help` get the help text, `/new` a new conversation,
-  forwarded messages and anything but text a fixed refusal; an edited message
+  forwarded messages and anything but text and voice a fixed refusal (voice: see Voice); an edited message
   or a group is ignored. `Bridge.dispatch/3` runs it: a per-chat serial queue
   (`ChatQueue`: a process per `{bot, chat}`, at most 3 waiting, 20 queues in
   all, overflow texts "wait" / "busy") and the turns in

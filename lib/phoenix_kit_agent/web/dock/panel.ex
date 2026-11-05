@@ -19,7 +19,8 @@ defmodule PhoenixKitAgent.Web.Dock.Panel do
     * `.Feed` — keeps the feed scrolled to its end while the user is there,
       also after a live navigation moves the view (it is hidden until pinned);
     * `.Composer` — Enter sends, the page's path goes with the form, the text
-      is cleared once the turn started (`pk-agent:sent`). The textarea is
+      is cleared once the turn started (`pk-agent:sent`), and the words of a
+      recording join what is typed (`pk-agent:dictated`). The textarea is
       `phx-update="ignore"`: the browser owns the draft, so a re-render (a
       file uploading, a message arriving) never wipes it;
     * `.Waiting` — the indicator gives up after the deadline of a turn and
@@ -62,6 +63,8 @@ defmodule PhoenixKitAgent.Web.Dock.Panel do
   attr(:instructions_form, :any, default: nil)
   attr(:unsent, :list, required: true)
   attr(:upload, :any, required: true, doc: "`@uploads.files`")
+  attr(:speech?, :boolean, default: false, doc: "whether the composer has a microphone")
+  attr(:transcribing?, :boolean, default: false, doc: "whether a clip is being written down")
 
   def dock(assigns) do
     ~H"""
@@ -215,6 +218,8 @@ defmodule PhoenixKitAgent.Web.Dock.Panel do
           unsent={@unsent}
           turn_ref={@turn_ref}
           activity={@activity}
+          speech?={@speech?}
+          transcribing?={@transcribing?}
         />
       </section>
     </div>
@@ -345,6 +350,8 @@ defmodule PhoenixKitAgent.Web.Dock.Panel do
   attr(:unsent, :list, required: true)
   attr(:turn_ref, :string, default: nil)
   attr(:activity, :any, required: true)
+  attr(:speech?, :boolean, default: false)
+  attr(:transcribing?, :boolean, default: false)
 
   defp composer(assigns) do
     ~H"""
@@ -395,6 +402,23 @@ defmodule PhoenixKitAgent.Web.Dock.Panel do
             <.icon name="hero-paper-clip" class="w-4 h-4" />
           </label>
           <.live_file_input upload={@upload} class="hidden" />
+          <%!-- The core's recorder, a module that older cores lack: named as an atom, so this compiles without it --%>
+          <.live_component
+            :if={@speech?}
+            module={PhoenixKitWeb.Components.Core.AudioRecorder}
+            id="pk-agent-mic"
+            format={:wav_16k}
+            max_seconds={PhoenixKitAgent.Speech.max_seconds()}
+            label={gettext("Dictate")}
+            busy={@transcribing?}
+            errors={:inline}
+            target={nil}
+            portal={true}
+            class={nil}
+          />
+          <span :if={@transcribing?} id="pk-agent-transcribing" role="status" class="flex items-center gap-1 text-xs text-base-content/60">
+            <span class="loading loading-dots loading-xs"></span> {gettext("Writing down what you said…")}
+          </span>
           <span class="flex-1"></span>
           <button
             :if={@turn_ref}
@@ -701,6 +725,14 @@ defmodule PhoenixKitAgent.Web.Dock.Panel do
             }, true)
           }
           this.handleEvent("pk-agent:sent", () => { this.el.value = "" })
+          // Dictated words join what is typed; the person edits and sends.
+          this.handleEvent("pk-agent:dictated", ({ text }) => {
+            const typed = this.el.value
+            const gap = typed === "" || /\s$/.test(typed) ? "" : " "
+            this.el.value = typed + gap + text
+            this.el.focus()
+            this.el.setSelectionRange(this.el.value.length, this.el.value.length)
+          })
         }
       }
     </script>

@@ -9,6 +9,7 @@ defmodule PhoenixKitAgent.Config do
   | `agent_enabled` | `false` (see `PhoenixKitAgent.enabled?/0`) |
   | `agent_default_endpoint_uuid` | none — the AI endpoint the assistant uses |
   | `agent_vision_endpoint_uuid` | none — describes images for a model without image input |
+  | `agent_speech_endpoint_uuid` | none — writes down voice messages and the panel's microphone; none = voice off |
   | `agent_system_prompt` | none — the module's system prompt (JSON `{"text": …}`) |
   | `agent_daily_cost_limit_micro_usd` | `1_000_000` ($1) |
   | `agent_monthly_cost_limit_micro_usd` | `10_000_000` ($10) |
@@ -33,9 +34,10 @@ defmodule PhoenixKitAgent.Config do
   Core keeps a string setting to 1000 characters, so the two settings that can
   be longer — the module prompt and the watchers — are JSON settings
   (`value_json`), written by `put_system_prompt/2` and `put_limit_watchers/2`.
-  The two models are written by `put_default_endpoint/2` and
-  `put_vision_endpoint/2`, which take only an AI endpoint that chats and fits
-  its AI task (`agent.chat`, `agent.attachment`).
+  The three models are written by `put_default_endpoint/2`,
+  `put_vision_endpoint/2` and `put_speech_endpoint/2`, which take only an AI
+  endpoint that chats and fits its AI task (`agent.chat`, `agent.attachment`,
+  `agent.speech`).
 
   Every writer records the change with who made it (`actor_uuid:` in `opts`)
   in the core Activity log: through the settings history (`setting.changed`,
@@ -94,7 +96,7 @@ defmodule PhoenixKitAgent.Config do
   # The longest module prompt, in characters.
   @prompt_max 16_000
 
-  @typedoc "Why `put_default_endpoint/2` or `put_vision_endpoint/2` wrote nothing."
+  @typedoc "Why `put_default_endpoint/2`, `put_vision_endpoint/2` or `put_speech_endpoint/2` wrote nothing."
   @type endpoint_refusal ::
           :invalid_endpoint | {:model_unfit | :model_unverified, [atom()]}
 
@@ -127,6 +129,36 @@ defmodule PhoenixKitAgent.Config do
   @doc "The AI endpoint that describes images for a model without image input, or `nil`."
   @spec vision_endpoint_uuid() :: String.t() | nil
   def vision_endpoint_uuid, do: uuid_setting("agent_vision_endpoint_uuid")
+
+  @doc "The AI endpoint that writes down speech (voice messages, the panel's microphone), or `nil`."
+  @spec speech_endpoint_uuid() :: String.t() | nil
+  def speech_endpoint_uuid, do: uuid_setting("agent_speech_endpoint_uuid")
+
+  @doc """
+  Whether voice input is on: the AI module can write speech down
+  (`PhoenixKitAI.transcribe/3`, which the first releases of `phoenix_kit_ai`
+  lack, so it is feature-detected like `writes?/0`) and a speech model is
+  chosen. `config :phoenix_kit_agent, :speech_ai` names another module with
+  `transcribe/3` in tests.
+  """
+  @spec speech?() :: boolean()
+  def speech?, do: speech_endpoint_uuid() != nil and transcribe?()
+
+  @doc """
+  Whether the AI module at hand can write speech down at all
+  (`PhoenixKitAI.transcribe/3`, in the releases of `phoenix_kit_ai` after
+  0.27.0): the Settings page offers no speech model without it.
+  """
+  @spec transcribe?() :: boolean()
+  def transcribe? do
+    ai = speech_ai()
+    Code.ensure_loaded?(ai) and function_exported?(ai, :transcribe, 3)
+  end
+
+  @doc false
+  # The module that writes speech down: `PhoenixKitAI`, unless a test names another.
+  @spec speech_ai() :: module()
+  def speech_ai, do: Application.get_env(:phoenix_kit_agent, :speech_ai, PhoenixKitAI)
 
   @doc "The module's system prompt, or `nil`."
   @spec system_prompt() :: String.t() | nil
@@ -306,6 +338,16 @@ defmodule PhoenixKitAgent.Config do
           {:ok, term()} | {:error, endpoint_refusal() | Ecto.Changeset.t()}
   def put_vision_endpoint(uuid, opts),
     do: put_endpoint("agent_vision_endpoint_uuid", "agent.attachment", uuid, opts)
+
+  @doc """
+  Sets the AI endpoint that writes down speech (`agent_speech_endpoint_uuid`),
+  or none (`nil`: voice is off); as `put_default_endpoint/2`, against the
+  `agent.speech` AI task (its model must take audio).
+  """
+  @spec put_speech_endpoint(String.t() | nil, keyword()) ::
+          {:ok, term()} | {:error, endpoint_refusal() | Ecto.Changeset.t()}
+  def put_speech_endpoint(uuid, opts),
+    do: put_endpoint("agent_speech_endpoint_uuid", "agent.speech", uuid, opts)
 
   defp put_endpoint(key, _task, nil, opts),
     do: Settings.update_setting_with_module(key, "", @module, opts)

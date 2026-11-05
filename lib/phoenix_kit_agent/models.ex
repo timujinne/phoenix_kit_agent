@@ -48,7 +48,7 @@ defmodule PhoenixKitAgent.Models do
   What a call on an endpoint is: a model call of a turn, or a picture
   described by the vision model.
   """
-  @type call_kind :: :chat | :vision
+  @type call_kind :: :chat | :vision | :speech
 
   # What `reports_cost?/2` reads of an endpoint, its key left out.
   @cost_fields [:uuid, :name, :model, :provider, :base_url, :provider_settings]
@@ -112,6 +112,17 @@ defmodule PhoenixKitAgent.Models do
     |> image_input_support()
   end
 
+  @doc """
+  `audio_input_support/1` for the endpoints with these uuids, read again from
+  the database (one that is gone is left out).
+  """
+  @spec audio_input_support_of([String.t()]) :: %{String.t() => support()}
+  def audio_input_support_of(uuids) when is_list(uuids) do
+    from(e in Endpoint, where: e.uuid in ^Enum.uniq(uuids))
+    |> RepoHelper.repo().all()
+    |> audio_input_support()
+  end
+
   @doc "Whether each endpoint's model takes tools (see the moduledoc): `%{endpoint_uuid => support}`."
   @spec tools_support([Endpoint.t()]) :: %{String.t() => support()}
   def tools_support(endpoints), do: capability(endpoints, :tools)
@@ -122,6 +133,13 @@ defmodule PhoenixKitAgent.Models do
   """
   @spec image_input_support([Endpoint.t()]) :: %{String.t() => support()}
   def image_input_support(endpoints), do: capability(endpoints, :vision)
+
+  @doc """
+  Whether each endpoint's model takes audio as input (see the moduledoc):
+  `%{endpoint_uuid => support}`.
+  """
+  @spec audio_input_support([Endpoint.t()]) :: %{String.t() => support()}
+  def audio_input_support(endpoints), do: capability(endpoints, :audio_input)
 
   @doc """
   `image_input_support/1` for the one endpoint with this uuid, read again from
@@ -144,15 +162,21 @@ defmodule PhoenixKitAgent.Models do
   defp capability(endpoints, flag),
     do: Map.new(endpoints, &{&1.uuid, &1 |> Capabilities.for_endpoint() |> support(flag)})
 
-  defp support(%Capabilities{} = caps, flag) do
-    case Map.fetch!(caps, flag) do
+  defp support(%Capabilities{} = caps, flag), do: flag_support(caps, flag)
+  defp support(:unknown, _flag), do: :unknown
+
+  @doc false
+  # What one flag of the capabilities says. A flag the `phoenix_kit_ai` at hand
+  # does not know (`audio_input` before its first release with it) is `:unknown`,
+  # never a crash that would take the other flags with it.
+  @spec flag_support(map(), atom()) :: support()
+  def flag_support(caps, flag) do
+    case Map.get(caps, flag) do
       :yes -> :supported
       :no -> :unsupported
-      :unknown -> :unknown
+      _unknown_or_absent -> :unknown
     end
   end
-
-  defp support(:unknown, _flag), do: :unknown
 
   @doc """
   Whether a call on the endpoint gets what it cost in the AI journal, as
@@ -166,6 +190,8 @@ defmodule PhoenixKitAgent.Models do
       `PhoenixKitAI.TaskLimits.money_counted?/2` with `:vision`, which is the
       chat rule: `phoenix_kit_ai` prices a description like a chat call (the
       provider's cost, a catalogue, a manual or a list price).
+    * `:speech` (a recording written down, `PhoenixKitAI.transcribe/3`) — the
+      same rule (`TaskLimits.money_counted?/2` with `:audio_input`).
 
   A `t:summary/0` carries the answer for `:chat`.
   """
@@ -176,6 +202,9 @@ defmodule PhoenixKitAgent.Models do
 
   def reports_cost?(%Endpoint{} = endpoint, :vision),
     do: TaskLimits.money_counted?(endpoint, [:vision])
+
+  def reports_cost?(%Endpoint{} = endpoint, :speech),
+    do: TaskLimits.money_counted?(endpoint, [:audio_input])
 
   def reports_cost?(%{reports_cost?: reports?}, :chat) when is_boolean(reports?), do: reports?
 

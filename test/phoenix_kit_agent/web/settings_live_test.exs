@@ -196,6 +196,135 @@ defmodule PhoenixKitAgent.Web.SettingsLiveTest do
     end
   end
 
+  describe "the speech model: Settings → AI Agent sets the model that writes speech down" do
+    setup %{conn: conn} do
+      manager = user_with(["agent", "agent.manage"], "manager")
+
+      %{
+        conn: log_in(conn, manager),
+        manager: manager,
+        hears: declared(%{name: "Hears", model: "a/ears"}, %{"audio_input" => "yes"}),
+        deaf: declared(%{name: "Deaf", model: "a/deaf"}, %{"audio_input" => "no"}),
+        direct: endpoint_fixture(%{name: "Direct", provider: "deepseek", model: "deepseek-chat"})
+      }
+    end
+
+    test "the choice is the AI endpoints, marked when their model does not take audio", ctx do
+      {:ok, view, _html} = live(ctx.conn, @path)
+      speech = fn e -> "#agent-speech-endpoint option[value='#{e.uuid}']" end
+
+      for e <- [ctx.hears, ctx.deaf, ctx.direct], do: assert(has_element?(view, speech.(e)))
+      assert has_element?(view, "#agent-speech-hint")
+
+      _ = render_async(view)
+
+      refute has_element?(view, speech.(ctx.hears), "audio")
+      assert has_element?(view, speech.(ctx.deaf), "does not take audio")
+      assert has_element?(view, speech.(ctx.direct), "audio unknown")
+    end
+
+    test "saves it, with who in the settings history, and back to none", ctx do
+      {:ok, view, _html} = live(ctx.conn, @path)
+
+      view
+      |> form("#agent-models-form", models: %{speech_endpoint_uuid: ctx.hears.uuid})
+      |> render_submit()
+
+      assert has_element?(view, "#flash-info")
+      assert Config.speech_endpoint_uuid() == ctx.hears.uuid
+      assert [entry] = settings_entries("agent_speech_endpoint_uuid")
+      assert entry.actor_uuid == ctx.manager.uuid
+      # The other two were not touched.
+      assert Config.default_endpoint_uuid() == nil
+      assert Config.vision_endpoint_uuid() == nil
+
+      view
+      |> form("#agent-models-form", models: %{speech_endpoint_uuid: ""})
+      |> render_submit()
+
+      assert Config.speech_endpoint_uuid() == nil
+    end
+
+    test "a model that does not take audio, or nobody knows about, is refused", ctx do
+      {:ok, view, _html} = live(ctx.conn, @path)
+
+      view
+      |> form("#agent-models-form", models: %{speech_endpoint_uuid: ctx.deaf.uuid})
+      |> render_submit()
+
+      assert has_element?(view, "#flash-error")
+      assert render(view) =~ "does not take audio"
+
+      view
+      |> form("#agent-models-form", models: %{speech_endpoint_uuid: ctx.direct.uuid})
+      |> render_submit()
+
+      assert render(view) =~ "nobody knows whether its model takes audio"
+      assert Config.speech_endpoint_uuid() == nil
+      assert settings_entries("agent_speech_endpoint_uuid") == []
+    end
+
+    test "on an AI module that cannot write speech down there is no speech select", ctx do
+      Application.put_env(:phoenix_kit_agent, :speech_ai, __MODULE__)
+      on_exit(fn -> Application.delete_env(:phoenix_kit_agent, :speech_ai) end)
+
+      {:ok, view, _html} = live(ctx.conn, @path)
+
+      refute has_element?(view, "#agent-speech-endpoint")
+      refute has_element?(view, "#agent-speech-hint")
+      assert has_element?(view, "#agent-speech-unavailable", "newer version of the AI module")
+
+      # A forged field is refused, even for a model that would be fine.
+      render_hook(view, "save_models", %{"models" => %{"speech_endpoint_uuid" => ctx.hears.uuid}})
+
+      assert Config.speech_endpoint_uuid() == nil
+      assert settings_entries("agent_speech_endpoint_uuid") == []
+    end
+
+    test "a speech model that reports no cost is warned about", ctx do
+      {:ok, _} = Settings.update_setting("agent_speech_endpoint_uuid", ctx.direct.uuid)
+      {:ok, view, _html} = live(ctx.conn, @path)
+
+      assert has_element?(view, "#agent-speech-money-off")
+
+      {:ok, _} = Settings.update_setting("agent_speech_endpoint_uuid", "")
+      {:ok, view, _html} = live(ctx.conn, @path)
+
+      refute has_element?(view, "#agent-speech-money-off")
+    end
+
+    test "a model the page did not offer is refused", ctx do
+      embedder = endpoint_fixture(%{name: "Embed", model: "openai/text-embedding-3-small"})
+      {:ok, view, _html} = live(ctx.conn, @path)
+
+      for forged <- [Ecto.UUID.generate(), embedder.uuid, "not-a-uuid", ["x"]] do
+        render_hook(view, "save_models", %{"models" => %{"speech_endpoint_uuid" => forged}})
+      end
+
+      assert Config.speech_endpoint_uuid() == nil
+      assert settings_entries("agent_speech_endpoint_uuid") == []
+    end
+
+    test "a page opened before the right was taken away saves no speech model", ctx do
+      {:ok, view, _html} = live(ctx.conn, @path)
+
+      [role] =
+        ctx.manager
+        |> Roles.get_user_roles()
+        |> Enum.reject(&(&1 in ["Owner", "Admin", "User"]))
+        |> Enum.map(&Roles.get_role_by_name/1)
+
+      :ok = Permissions.revoke_permission(role.uuid, "agent.manage")
+
+      view
+      |> form("#agent-models-form", models: %{speech_endpoint_uuid: ctx.hears.uuid})
+      |> render_submit()
+
+      assert has_element?(view, "#flash-error")
+      assert Config.speech_endpoint_uuid() == nil
+    end
+  end
+
   describe "the models: Settings → AI Agent sets the default and the vision model" do
     setup %{conn: conn} do
       manager = user_with(["agent", "agent.manage"], "manager")

@@ -160,6 +160,11 @@ defmodule PhoenixKitAgent.Turns.Runner do
                         endpoint_no_model integration_not_configured integration_deleted
                         not_configured)a
 
+  @doc false
+  # The same list for the other calls of the module (`PhoenixKitAgent.Speech`).
+  @spec endpoint_unusable() :: [atom()]
+  def endpoint_unusable, do: @endpoint_unusable
+
   # The refusals of the AI guard (`PhoenixKitAI.Guard`), each a code of its
   # own in `messages.error`: `{reason, …}` is stored as `reason`.
   @guard_errors ~w(model_unfit model_unverified no_provider_for_params task_blocked

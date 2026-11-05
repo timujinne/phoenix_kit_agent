@@ -126,7 +126,7 @@ defmodule PhoenixKitAgent.Limits do
   `announce_reached/2`.
 
   Options: `:use` — what the call on the endpoint is (`:chat`, the default,
-  or `:vision`, see `money_counted?/2`); `:now`.
+  `:vision` or `:speech`, see `money_counted?/2`); `:now`.
   """
   @spec check(UserConfig.effective(), String.t() | nil, keyword()) ::
           :ok | {:error, {:limit_reached, status()}}
@@ -220,7 +220,7 @@ defmodule PhoenixKitAgent.Limits do
   def guard_watchers(_no_user), do: Config.limit_watchers()
 
   @doc """
-  Whether money counts for a `call` (`:chat` or `:vision`) on
+  Whether money counts for a `call` (`:chat`, `:vision` or `:speech`) on
   `endpoint_uuid` (see the moduledoc): an endpoint whose such calls get a
   cost (`PhoenixKitAgent.Models.reports_cost?/2`), or one that cannot be
   found.

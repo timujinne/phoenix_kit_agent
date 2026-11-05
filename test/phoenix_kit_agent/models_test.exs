@@ -208,6 +208,17 @@ defmodule PhoenixKitAgent.ModelsTest do
     end
   end
 
+  describe "flag_support/2" do
+    test "a flag the capabilities do not carry is unknown, not a crash" do
+      caps = %{tools: :yes, vision: :no}
+
+      assert Models.flag_support(caps, :tools) == :supported
+      assert Models.flag_support(caps, :vision) == :unsupported
+      assert Models.flag_support(caps, :audio_input) == :unknown
+      assert Models.flag_support(%{audio_input: :unknown}, :audio_input) == :unknown
+    end
+  end
+
   describe "reports_cost?/2" do
     # A manual price on the endpoint: whole micro-dollars per 1M tokens. Setting
     # one needs ai.manage (an Owner).

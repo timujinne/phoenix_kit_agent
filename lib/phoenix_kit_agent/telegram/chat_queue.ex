@@ -8,6 +8,17 @@ defmodule PhoenixKitAgent.Telegram.ChatQueue do
   it serves at once (`PhoenixKitAgent.Telegram.QueueSupervisor`), a message
   from a new chat is `:busy`. A process with nothing to do for a minute ends.
 
+  The pictures of one album (`media_group_id`, the job's `group`) are one
+  question: the others of the group of a job that runs **or waits** are kept as
+  its siblings (not counted among the waiting ones, at most nine), whatever the
+  chat was doing when the album came, so a sibling is not told "wait a little"
+  (the first part of an album is a job like any other: with the three places
+  taken it is). The running job takes them (`take_siblings/3`) once it has waited a
+  moment for the rest; a waiting one gets them when it starts. Siblings that
+  are not taken when the job ends run as one job in front of the waiting ones
+  (if no turn can be started for it, the album is answered "busy" once). A part that comes after the running job took its siblings is
+  a job of its own, with its own answer.
+
   It holds the text of a waiting message, so it keeps itself out of crash
   reports: the process is `sensitive`, and its status shows neither the state
   nor the message it was handling nor the reason it ended with (a function
@@ -24,12 +35,27 @@ defmodule PhoenixKitAgent.Telegram.ChatQueue do
   @supervisor PhoenixKitAgent.Telegram.QueueSupervisor
   @tasks PhoenixKitAgent.Telegram.TaskSupervisor
   @max_waiting 3
+  @max_siblings 9
 
   @doc "Queues `job` of the chat `ref` of the bot `connection_uuid`."
   @spec submit(String.t(), PhoenixKitAgent.Telegram.Bridge.ref(), map()) :: :ok | :full | :busy
   def submit(connection_uuid, {:telegram_link, _user, _connection, chat_id} = ref, job) do
     key = {connection_uuid, chat_id}
     enqueue(key, ref, job, 2)
+  end
+
+  @doc """
+  The jobs of the same album (`group`) that came while the job of the chat was
+  running; none are taken again. `[]` when the chat has no queue any more.
+  """
+  @spec take_siblings(String.t(), integer(), String.t()) :: [{Bridge.ref(), map()}]
+  def take_siblings(connection_uuid, chat_id, group) do
+    case Registry.lookup(@registry, {connection_uuid, chat_id}) do
+      [{pid, _}] -> GenServer.call(pid, {:take_siblings, group})
+      [] -> []
+    end
+  catch
+    :exit, _ -> []
   end
 
   defp enqueue(_key, _ref, _job, 0), do: :busy
@@ -74,7 +100,17 @@ defmodule PhoenixKitAgent.Telegram.ChatQueue do
   @impl GenServer
   def init(opts) do
     Process.flag(:sensitive, true)
-    {:ok, %{connection_uuid: opts[:connection_uuid], waiting: :queue.new(), task: nil, idle: nil}}
+
+    {:ok,
+     %{
+       connection_uuid: opts[:connection_uuid],
+       waiting: :queue.new(),
+       task: nil,
+       idle: nil,
+       group: nil,
+       siblings: [],
+       held: %{}
+     }}
   end
 
   # Every callback runs under `guarded/2`: whatever goes wrong inside ends the
@@ -84,6 +120,12 @@ defmodule PhoenixKitAgent.Telegram.ChatQueue do
   @impl GenServer
   def handle_call({:enqueue, ref, job}, _from, state) do
     guarded(state, :busy, fn -> enqueue_job(state, ref, job) end)
+  end
+
+  def handle_call({:take_siblings, group}, _from, state) do
+    if group == state.group,
+      do: {:reply, state.siblings, %{state | group: nil, siblings: []}},
+      else: {:reply, [], state}
   end
 
   def handle_call(_other, _from, state), do: {:reply, {:error, :unknown}, state}
@@ -101,11 +143,31 @@ defmodule PhoenixKitAgent.Telegram.ChatQueue do
     end
   end
 
+  defp enqueue_job(%{group: group} = state, ref, %{group: group} = job)
+       when is_binary(group) and length(state.siblings) < @max_siblings,
+       do: {:reply, :ok, %{state | siblings: state.siblings ++ [{ref, job}]}}
+
   defp enqueue_job(state, ref, job) do
-    if :queue.len(state.waiting) < @max_waiting,
-      do: {:reply, :ok, %{state | waiting: :queue.in({ref, job}, state.waiting)}},
-      else: {:reply, :full, state}
+    group = group_of(job)
+
+    cond do
+      group && waiting_group?(state, group) && length(held(state, group)) < @max_siblings ->
+        held = Map.put(state.held, group, held(state, group) ++ [{ref, job}])
+        {:reply, :ok, %{state | held: held}}
+
+      :queue.len(state.waiting) < @max_waiting ->
+        {:reply, :ok, %{state | waiting: :queue.in({ref, job}, state.waiting)}}
+
+      true ->
+        {:reply, :full, state}
+    end
   end
+
+  defp held(state, group), do: Map.get(state.held, group, [])
+
+  defp waiting_group?(state, group),
+    do:
+      state.waiting |> :queue.to_list() |> Enum.any?(fn {_ref, job} -> group_of(job) == group end)
 
   defp info({task_ref, _result}, %{task: %Task{ref: task_ref}} = state) do
     Process.demonitor(task_ref, [:flush])
@@ -151,12 +213,12 @@ defmodule PhoenixKitAgent.Telegram.ChatQueue do
 
   # `{:ok, state}`, or `:error` when the task supervisor would not take the
   # turn (the job is answered "busy" by the caller or here).
-  defp start(state, ref, job) do
+  defp start(state, ref, job, siblings \\ []) do
     if state.idle, do: Process.cancel_timer(state.idle)
     connection_uuid = state.connection_uuid
 
     task = Task.Supervisor.async_nolink(@tasks, fn -> Turn.run(connection_uuid, ref, job) end)
-    {:ok, %{state | task: task, idle: nil}}
+    {:ok, %{state | task: task, idle: nil, group: group_of(job), siblings: siblings}}
   rescue
     exception in RuntimeError ->
       # Only the full supervisor; any other RuntimeError is a bug, not "busy".
@@ -168,14 +230,17 @@ defmodule PhoenixKitAgent.Telegram.ChatQueue do
     :exit, _reason -> :error
   end
 
+  defp group_of(%{group: group}) when is_binary(group), do: group
+  defp group_of(_job), do: nil
+
+  # Siblings nobody took run next, as one job; else the first waiting job, with
+  # the siblings that came for it.
   defp next(state) do
-    state = %{state | task: nil}
+    state = %{state | task: nil, group: nil}
 
-    case :queue.out(state.waiting) do
-      {{:value, {ref, job}}, rest} ->
-        state = %{state | waiting: rest}
-
-        case start(state, ref, job) do
+    case pick(state) do
+      {{ref, job, siblings}, state} ->
+        case start(state, ref, job, siblings) do
           {:ok, started} ->
             started
 
@@ -184,8 +249,22 @@ defmodule PhoenixKitAgent.Telegram.ChatQueue do
             next(state)
         end
 
-      {:empty, _} ->
+      nil ->
         wait_for_idle(state)
+    end
+  end
+
+  defp pick(%{siblings: [{ref, job} | rest]} = state),
+    do: {{ref, job, rest}, %{state | siblings: []}}
+
+  defp pick(state) do
+    case :queue.out(state.waiting) do
+      {{:value, {ref, job}}, waiting} ->
+        {siblings, held} = Map.pop(state.held, group_of(job), [])
+        {{ref, job, siblings}, %{state | waiting: waiting, held: held}}
+
+      {:empty, _} ->
+        nil
     end
   end
 

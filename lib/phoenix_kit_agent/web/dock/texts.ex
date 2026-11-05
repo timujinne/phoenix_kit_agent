@@ -3,7 +3,8 @@ defmodule PhoenixKitAgent.Web.Dock.Texts do
   What the chat panel (`PhoenixKitAgent.Web.Dock`) tells a person instead of a
   code: the refusals of `PhoenixKitAgent.Conversations`,
   `PhoenixKitAgent.Turns` and `PhoenixKitAgent.Attachments`, the codes of a
-  failed attachment (`PhoenixKitAgent.Attachments.Processor`), the notices of
+  failed attachment (`PhoenixKitAgent.Attachments.Processor`), the errors of a
+  recording written down (`PhoenixKitAgent.Speech`), the notices of
   a turn (stored in English, shown by their code), the states and refusals of
   a confirmation card (`PhoenixKitAgent.Confirmations`) and the upload errors
   of LiveView. A code this module does not know gets a general text, never
@@ -161,6 +162,38 @@ defmodule PhoenixKitAgent.Web.Dock.Texts do
     do: gettext("The server was too busy to read it. Add it again.")
 
   def attachment_error(_crashed_or_unknown), do: gettext("It could not be read.")
+
+  @doc "The text for the error of `PhoenixKitAgent.Speech.transcribe/4`."
+  @spec speech_error(term()) :: String.t()
+  def speech_error(:speech_off), do: gettext("Voice input is not set up.")
+  def speech_error(:no_speech), do: gettext("No speech was heard. Try again.")
+
+  def speech_error(:too_long),
+    do: gettext("The recording is too long. Keep it under two minutes.")
+
+  def speech_error(:unfit),
+    do:
+      gettext(
+        "The model that writes speech down cannot be used for it now. An administrator chooses another one."
+      )
+
+  def speech_error(:failed), do: gettext("The recording could not be written down. Try again.")
+  def speech_error(:unverified), do: notice("model_unverified")
+  def speech_error(:no_provider), do: notice("no_provider_for_params")
+  def speech_error(:insufficient_credits), do: notice("insufficient_credits")
+  def speech_error(:rate_limited), do: notice("rate_limited")
+  def speech_error(:endpoint_unusable), do: notice("endpoint_disabled")
+
+  def speech_error(:unsupported_format),
+    do: gettext("This kind of recording cannot be read. Record it again, or send another format.")
+
+  def speech_error(:abandoned), do: speech_error(:failed)
+
+  def speech_error(:bad_answer),
+    do: gettext("The model's answer could not be read as the words. Try again.")
+
+  def speech_error(:budget_exceeded), do: notice("budget_exceeded")
+  def speech_error(reason), do: refusal(reason)
 
   @doc """
   The text of a notice in the feed by its `error` code, in the panel's

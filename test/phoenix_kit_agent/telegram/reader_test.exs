@@ -453,6 +453,8 @@ defmodule PhoenixKitAgent.Telegram.ReaderTest do
         def edit_message(_, _, _, _, _), do: {:ok, true}
         def react(_, _, _, _), do: {:ok, true}
         def typing(_, _), do: {:ok, true}
+        def download_file(_, _, _), do: {:error, :unavailable}
+        def can_download?, do: false
       end
 
       Application.put_env(:phoenix_kit_agent, :telegram_client, Exploding)
