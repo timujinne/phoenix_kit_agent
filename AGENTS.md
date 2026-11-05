@@ -263,30 +263,40 @@ and `Web.Markdown`).
   :telegram_updates_reader, {PhoenixKitAgent.Telegram.Reader, :holds?, []}`.
   `holds?/1` is only `:global.whereis_name/1` (it never calls the process, which
   may be in a long poll), and the name is registered only while the reader
-  really polls (switch on, a bot, no webhook). The offset
+  really polls (switch on, a bot, no webhook). A reader that lost the name
+  (`{:global_name_conflict, name}` after a netsplit, or a check before each
+  poll) stops reading and is `standby`. The offset
   (`agent_telegram_offset`, `"<connection uuid>:<update id>"`, written with
   `history: false`) is stored **before** the batch goes on — also from the
   `confirm:` of `Linking.handle_updates/3` — so an update is answered at most
   once; `:busy` leaves it alone and the batch is read again in 2 s. A 409
   "Conflict" pauses 60 s (status, one warning per 10 minutes); other errors
-  back off 5 → 60 s. `Bridge.handle_update/3` is pure (a decision, no I/O):
+  back off 5 → 60 s. `Bridge.handle_update/3` decides (it reads the link and remembers an unlinked
+  chat in the limiter's table, sends nothing):
   only a private text message of a chat `Linking.chat_for_update/1` knows, not
   older than 10 minutes; `/start <anything>` never reaches the agent (core's),
   bare `/start` and `/help` get the help text, `/new` a new conversation,
   forwarded messages and anything but text a fixed refusal; an edited message
   or a group is ignored. `Bridge.dispatch/3` runs it: a per-chat serial queue
   (`ChatQueue`: a process per `{bot, chat}`, at most 3 waiting, 20 queues in
-  all, overflow texts "wait" / "busy") and the jobs in
-  `PhoenixKitAgent.Telegram.TaskSupervisor`. A turn (`Telegram.Turn`)
+  all, overflow texts "wait" / "busy") and the turns in
+  `PhoenixKitAgent.Telegram.TaskSupervisor`; the replies that need no turn run
+  under their own `ReplySupervisor` and come to a linked chat once in 3 s at
+  most (`Limiter.allow_quick_reply?/2`). A queue that cannot start a turn (the
+  supervisor is full) answers "busy" and stays. A turn (`Telegram.Turn`)
   subscribes to `agent:conv:<uuid>` **before** `Turns.start/6`, shows 👀, sends
   `typing` every 4 s, then `Conversations.turn_result/2` becomes the answer
-  (markdown cleaned to plain text by `Format`, cut to 4096 UTF-16 units, one
-  message a second, one retry on a 429) with 👍, or a notice / refusal in the
+  (markdown cleaned to plain text by `Format`, addresses left whole, cut to
+  4096 UTF-16 units, one message a second, one retry on a 429) with 👍 — only
+  when it was sent and no tool of the turn was denied (a request to change
+  something, `Conversations.turn_denied?/2`) — or a notice / refusal in the
   user's language (`Telegram.Texts`, `RecipientLocale`) with 🤷. A chat nobody
   linked is remembered for 60 s (`Limiter`) and told once per 10 minutes,
   20 such replies a minute per bot. Nothing of an update's text or the bot's
-  token lives in a process state (the reader, queues and jobs are
-  `:sensitive`, `format_status` is redacted) or in a log: a failure logs its
+  token lives in a process state (the reader and the queues are
+  `:sensitive` and their `format_status` hides the state, the message and the
+  arguments of a failure; a job holds its text only while it runs, in a task
+  that catches its own exceptions) or in a log: a failure logs its
   class and the `update_id`. In the test env the reader does not poll by itself
   (`telegram_reader_autostart: false`); `Reader.cycle/2` is one look and one
   poll, and `PhoenixKitAgent.Test.TelegramClient` plays the bot.

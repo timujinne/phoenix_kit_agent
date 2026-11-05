@@ -9,12 +9,16 @@ defmodule PhoenixKitAgent.Telegram.ChatQueue do
   from a new chat is `:busy`. A process with nothing to do for a minute ends.
 
   It holds the text of a waiting message, so it keeps itself out of crash
-  reports: the process is `sensitive` and its status shows no jobs.
+  reports: the process is `sensitive`, and its status shows neither the state
+  nor the message it was handling nor the reason it ended with (a function
+  clause error would carry the job as an argument). A turn that cannot be
+  started (the task supervisor is full) is answered "busy" and does not end
+  the queue.
   """
 
   use GenServer, restart: :temporary
 
-  alias PhoenixKitAgent.Telegram.Turn
+  alias PhoenixKitAgent.Telegram.{Bridge, Turn}
 
   @registry PhoenixKitAgent.Telegram.Registry
   @supervisor PhoenixKitAgent.Telegram.QueueSupervisor
@@ -75,7 +79,10 @@ defmodule PhoenixKitAgent.Telegram.ChatQueue do
 
   @impl GenServer
   def handle_call({:enqueue, ref, job}, _from, %{task: nil} = state) do
-    {:reply, :ok, start(state, ref, job)}
+    case start(state, ref, job) do
+      {:ok, state} -> {:reply, :ok, state}
+      :error -> {:reply, :busy, wait_for_idle(state)}
+    end
   end
 
   def handle_call({:enqueue, ref, job}, _from, state) do
@@ -104,13 +111,29 @@ defmodule PhoenixKitAgent.Telegram.ChatQueue do
   def handle_info(_other, state), do: {:noreply, state}
 
   @impl GenServer
-  def format_status(status), do: Map.update(status, :state, nil, fn _state -> :redacted end)
+  def format_status(status) do
+    status
+    |> Map.update(:state, nil, fn _state -> :redacted end)
+    |> Map.update(:message, nil, fn _message -> :redacted end)
+    |> Map.update(:reason, nil, &reason_kind/1)
+  end
 
+  # The kind of the failure, none of its arguments.
+  defp reason_kind({%{__struct__: module}, _stacktrace}), do: module
+  defp reason_kind({kind, _detail}) when is_atom(kind), do: kind
+  defp reason_kind(reason) when is_atom(reason), do: reason
+  defp reason_kind(_other), do: :redacted
+
+  # `{:ok, state}`, or `:error` when the task supervisor would not take the
+  # turn (the job is answered "busy" by the caller or here).
   defp start(state, ref, job) do
     if state.idle, do: Process.cancel_timer(state.idle)
     connection_uuid = state.connection_uuid
+
     task = Task.Supervisor.async_nolink(@tasks, fn -> Turn.run(connection_uuid, ref, job) end)
-    %{state | task: task, idle: nil}
+    {:ok, %{state | task: task, idle: nil}}
+  rescue
+    RuntimeError -> :error
   end
 
   defp next(state) do
@@ -118,12 +141,24 @@ defmodule PhoenixKitAgent.Telegram.ChatQueue do
 
     case :queue.out(state.waiting) do
       {{:value, {ref, job}}, rest} ->
-        start(%{state | waiting: rest}, ref, job)
+        state = %{state | waiting: rest}
+
+        case start(state, ref, job) do
+          {:ok, started} ->
+            started
+
+          :error ->
+            Bridge.busy(state.connection_uuid, ref, job)
+            next(state)
+        end
 
       {:empty, _} ->
-        %{state | idle: Process.send_after(self(), :idle, idle_ms())}
+        wait_for_idle(state)
     end
   end
+
+  defp wait_for_idle(state),
+    do: %{state | idle: Process.send_after(self(), :idle, idle_ms())}
 
   defp idle_ms, do: Application.get_env(:phoenix_kit_agent, :telegram_queue_idle_ms, 60_000)
 end

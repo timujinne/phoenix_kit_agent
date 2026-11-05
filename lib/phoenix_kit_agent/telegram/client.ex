@@ -17,6 +17,7 @@ defmodule PhoenixKitAgent.Telegram.Client do
   @type chat_id :: integer()
 
   @callback connection_uuid() :: uuid() | nil
+  @callback bot_username(uuid()) :: String.t() | nil
   @callback webhook_set?(uuid()) :: boolean()
   @callback get_updates(uuid(), keyword()) :: {:ok, [map()]} | {:error, term()}
   @callback send_message(uuid(), chat_id(), String.t()) :: {:ok, term()} | {:error, term()}
@@ -32,6 +33,9 @@ defmodule PhoenixKitAgent.Telegram.Client do
 
   @impl true
   def connection_uuid, do: SiteBot.connection_uuid()
+
+  @impl true
+  def bot_username(uuid), do: SiteBot.bot_username(uuid)
 
   @impl true
   def webhook_set?(uuid), do: SiteBot.webhook_set?(uuid)

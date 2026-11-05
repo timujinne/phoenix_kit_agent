@@ -40,6 +40,13 @@ defmodule PhoenixKitAgent.Telegram.Texts do
     do: gettext("You may not use the assistant in Telegram.")
 
   def refusal(:conversation_busy), do: static(:wait)
+
+  def refusal(:message_too_long),
+    do: gettext("That message is too long for me. Write a shorter one.")
+
+  def refusal(:click_in_flight),
+    do: gettext("A change is being confirmed on the site. Write again in a moment.")
+
   def refusal(reason), do: Panel.refusal(reason)
 
   @doc "The text for the `error` code of a notice that ended a turn."

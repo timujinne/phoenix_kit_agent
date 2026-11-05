@@ -245,6 +245,27 @@ defmodule PhoenixKitAgent.Conversations do
 
   def turn_result(_conversation_uuid, _turn_ref), do: :none
 
+  @doc false
+  # Whether the turn asked for a tool that was refused ("denied"): for a
+  # Telegram chat, which is offered no write, a request to change something.
+  @spec turn_denied?(term(), term()) :: boolean()
+  def turn_denied?(conversation_uuid, turn_ref) when is_binary(turn_ref) do
+    case Ecto.UUID.cast(conversation_uuid) do
+      {:ok, uuid} ->
+        from(m in Message,
+          where:
+            m.conversation_uuid == ^uuid and m.turn_ref == ^turn_ref and m.role == "tool" and
+              m.tool_outcome == "denied"
+        )
+        |> repo().exists?()
+
+      :error ->
+        false
+    end
+  end
+
+  def turn_denied?(_conversation_uuid, _turn_ref), do: false
+
   defp result_of_turn(messages) do
     notice = messages |> Enum.filter(&(&1.role == "notice" and present?(&1.error))) |> List.last()
 

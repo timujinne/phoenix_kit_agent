@@ -2,14 +2,15 @@ defmodule PhoenixKitAgent.Telegram.Format do
   @moduledoc """
   An answer of the model made fit for a Telegram chat, which gets plain text.
 
-    * `plain/1` takes out the markdown the model may still use: `**` and `__`,
+    * `plain/1` takes out the markdown the model may still use: `**` and `__`
+      (not inside an address),
       heading markers at the start of a line (`# Title`; a `#` inside a line,
       as in "order #1234", stays), and turns `[text](https://…)` into
       `text https://…`;
     * `chunks/1` cuts a text into messages of at most 4096 UTF-16 units
       (what Telegram counts), by paragraph, a long paragraph by words and a
       word that is longer than a message by characters — never inside a
-      surrogate pair.
+      surrogate pair or a character made of several code points.
   """
 
   @limit 4096
@@ -23,9 +24,21 @@ defmodule PhoenixKitAgent.Telegram.Format do
         if label == url, do: label, else: label <> " " <> url
       end)
     )
-    |> String.replace(["**", "__"], "")
+    |> outside_urls(&String.replace(&1, ["**", "__"], ""))
     |> String.replace(~r/^[ \t]*\#{1,6}[ \t]+/mu, "")
     |> String.trim()
+  end
+
+  # `fun` over the text between the addresses; an address (`a__b` in a path)
+  # is left as it is.
+  defp outside_urls(text, fun) do
+    ~r/https?:\/\/[^\s)<>*]+/u
+    |> Regex.split(text, include_captures: true)
+    |> Enum.with_index()
+    |> Enum.map_join(fn
+      {part, index} when rem(index, 2) == 0 -> fun.(part)
+      {url, _index} -> url
+    end)
   end
 
   @doc "The messages of `text`, none longer than `limit` (default 4096) UTF-16 units."
@@ -88,16 +101,18 @@ defmodule PhoenixKitAgent.Telegram.Format do
     if units(word) <= limit, do: [word], else: by_characters(word, limit)
   end
 
+  # By characters as a person sees them (a flag or a letter with its accents
+  # stays whole), so a surrogate pair is never cut either.
   defp by_characters(word, limit) do
     {parts, current, _units} =
       word
-      |> String.codepoints()
-      |> Enum.reduce({[], "", 0}, fn cp, {parts, current, size} ->
-        width = units(cp)
+      |> String.graphemes()
+      |> Enum.reduce({[], "", 0}, fn grapheme, {parts, current, size} ->
+        width = units(grapheme)
 
         if size + width > limit,
-          do: {[current | parts], cp, width},
-          else: {parts, current <> cp, size + width}
+          do: {[current | parts], grapheme, width},
+          else: {parts, current <> grapheme, size + width}
       end)
 
     Enum.reverse([current | parts])

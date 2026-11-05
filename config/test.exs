@@ -14,6 +14,7 @@ config :phoenix_kit_agent, turn_stop_grace_ms: 200
 config :phoenix_kit_agent,
   telegram_reader_autostart: false,
   telegram_part_pause_ms: 0,
+  telegram_quick_reply_ms: 0,
   telegram_max_retry_ms: 50
 
 # `PGDATABASE` lets this suite point at a database the test role isn't

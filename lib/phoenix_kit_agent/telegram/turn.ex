@@ -7,7 +7,9 @@ defmodule PhoenixKitAgent.Telegram.Turn do
 
   The reaction tells how it went: 👀 while the agent works (with "typing…"
   every 4 seconds), then 👍 with the answer, or 🤷 with a short explanation
-  when the turn was refused or ended in a notice. The topic of the
+  when the turn was refused, ended in a notice, asked for a change the chat
+  may not make (a tool of the turn was denied) or when the answer could not
+  be sent. The topic of the
   conversation is subscribed **before** the turn starts, so its end cannot be
   missed; the wait is the turn's deadline plus a minute. If this process dies
   mid-turn (a deploy), the message keeps its 👀 and is not answered.
@@ -40,8 +42,7 @@ defmodule PhoenixKitAgent.Telegram.Turn do
   defp new_conversation(connection_uuid, ref, job, user_uuid, chat_id) do
     case start_conversation(user_uuid, ref) do
       {:ok, _conversation} ->
-        Bridge.say(connection_uuid, chat_id, Texts.static(:new_started))
-        Bridge.react(connection_uuid, chat_id, job.message_id, "👍")
+        reply(connection_uuid, chat_id, job.message_id, Texts.static(:new_started))
 
       {:error, _changeset} ->
         refuse(connection_uuid, chat_id, job.message_id, :not_found)
@@ -87,12 +88,22 @@ defmodule PhoenixKitAgent.Telegram.Turn do
   defp outcome(connection_uuid, chat_id, message_id, conversation, {:ok, turn_ref}) do
     await(connection_uuid, chat_id, conversation.uuid, turn_ref)
 
-    answer(
-      connection_uuid,
-      chat_id,
-      message_id,
-      Conversations.turn_result(conversation.uuid, turn_ref)
-    )
+    case Conversations.turn_result(conversation.uuid, turn_ref) do
+      {:answer, text} ->
+        answer(
+          connection_uuid,
+          chat_id,
+          message_id,
+          text,
+          not Conversations.turn_denied?(conversation.uuid, turn_ref)
+        )
+
+      {:notice, code} ->
+        refuse_with(connection_uuid, chat_id, message_id, Texts.notice(code))
+
+      :none ->
+        refuse_with(connection_uuid, chat_id, message_id, Texts.notice("deadline"))
+    end
   end
 
   defp outcome(connection_uuid, chat_id, message_id, _conversation, {:error, reason}),
@@ -101,7 +112,7 @@ defmodule PhoenixKitAgent.Telegram.Turn do
   # "Typing…" every 4 seconds until the turn says it is over, or gives up
   # one minute after the turn's own deadline.
   defp await(connection_uuid, chat_id, conversation_uuid, turn_ref) do
-    deadline = System.monotonic_time(:millisecond) + Config.turn_deadline_s() * 1_000 + @grace_ms
+    deadline = System.monotonic_time(:millisecond) + wait_ms()
     wait(connection_uuid, chat_id, conversation_uuid, turn_ref, deadline)
   end
 
@@ -122,29 +133,34 @@ defmodule PhoenixKitAgent.Telegram.Turn do
     end
   end
 
-  defp answer(connection_uuid, chat_id, message_id, {:answer, text}) do
+  # 👍 only for an answer that was sent, and that is not "I cannot do that
+  # here" (the turn asked for a change the chat is not allowed): that is 🤷,
+  # with the text the model said (it points to the site).
+  defp answer(connection_uuid, chat_id, message_id, text, fulfilled?) do
     case Format.plain(text) do
-      "" ->
-        refuse_with(connection_uuid, chat_id, message_id, Texts.notice("empty_answer"))
-
-      plain ->
-        Bridge.say(connection_uuid, chat_id, plain)
-        Bridge.react(connection_uuid, chat_id, message_id, "👍")
+      "" -> refuse_with(connection_uuid, chat_id, message_id, Texts.notice("empty_answer"))
+      plain -> reply(connection_uuid, chat_id, message_id, plain, fulfilled?)
     end
   end
 
-  defp answer(connection_uuid, chat_id, message_id, {:notice, code}),
-    do: refuse_with(connection_uuid, chat_id, message_id, Texts.notice(code))
+  defp reply(connection_uuid, chat_id, message_id, text, fulfilled? \\ true) do
+    emoji =
+      if Bridge.say(connection_uuid, chat_id, text) == :ok and fulfilled?, do: "👍", else: "🤷"
 
-  defp answer(connection_uuid, chat_id, message_id, :none),
-    do: refuse_with(connection_uuid, chat_id, message_id, Texts.notice("deadline"))
+    Bridge.react(connection_uuid, chat_id, message_id, emoji)
+  end
 
   defp refuse(connection_uuid, chat_id, message_id, reason),
     do: refuse_with(connection_uuid, chat_id, message_id, Texts.refusal(reason))
 
-  defp refuse_with(connection_uuid, chat_id, message_id, text) do
-    Bridge.say(connection_uuid, chat_id, text)
-    Bridge.react(connection_uuid, chat_id, message_id, "🤷")
+  defp refuse_with(connection_uuid, chat_id, message_id, text),
+    do: reply(connection_uuid, chat_id, message_id, text, false)
+
+  # The turn's own deadline and a minute more; `:telegram_turn_wait_ms` stands
+  # in for it in tests.
+  defp wait_ms do
+    Application.get_env(:phoenix_kit_agent, :telegram_turn_wait_ms) ||
+      Config.turn_deadline_s() * 1_000 + @grace_ms
   end
 
   defp typing_every_ms,

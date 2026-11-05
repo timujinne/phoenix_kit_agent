@@ -4,8 +4,8 @@ defmodule PhoenixKitAgent.Test.TelegramClient do
   the test process named in `:telegram_test_listener` as `{:tg, call, …}`,
   and the answers come from a script kept in an `Agent`:
 
-    * `connection_uuid`, `webhook_set?` — `set(:connection, uuid)` and
-      `set(:webhook, boolean)`;
+    * `connection_uuid`, `bot_username`, `webhook_set?` — `set(:connection, uuid)`,
+      `set(:bot_username, name)` and `set(:webhook, boolean)`;
     * `get_updates` — the next element of `set(:updates, [answer, …])` (each
       `{:ok, [update]}` or `{:error, reason}`; `{:ok, []}` once it is empty);
     * `send_message` — `set(:send, fun)` with `fun.(chat_id, text)` answering
@@ -49,6 +49,9 @@ defmodule PhoenixKitAgent.Test.TelegramClient do
 
   @impl true
   def connection_uuid, do: Agent.get(script(), & &1.connection)
+
+  @impl true
+  def bot_username(_uuid), do: Agent.get(script(), &Map.get(&1, :bot_username))
 
   @impl true
   def webhook_set?(uuid) do

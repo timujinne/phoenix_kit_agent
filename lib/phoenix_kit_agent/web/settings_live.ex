@@ -465,7 +465,11 @@ defmodule PhoenixKitAgent.Web.SettingsLive do
 
   # What the Telegram section shows: the switch and what the reader is doing.
   defp assign_telegram(socket) do
-    assign(socket, telegram?: Config.telegram_enabled?(), telegram_status: Status.current())
+    assign(socket,
+      telegram?: Config.telegram_enabled?(),
+      telegram_status: Status.current(),
+      telegram_bot: Status.bot()
+    )
   end
 
   defp telegram_status_text(:off), do: gettext("Off: the assistant does not answer in Telegram.")
@@ -755,6 +759,9 @@ defmodule PhoenixKitAgent.Web.SettingsLive do
           <p id="agent-telegram-status" class="text-sm">
             <span class={["badge", if(@telegram_status == :reading, do: "badge-success", else: "badge-ghost")]}>
               {gettext("Status")}
+            </span>
+            <span :if={@telegram_bot} id="agent-telegram-bot" class="font-medium">
+              @{@telegram_bot}:
             </span>
             {telegram_status_text(@telegram_status)}
           </p>

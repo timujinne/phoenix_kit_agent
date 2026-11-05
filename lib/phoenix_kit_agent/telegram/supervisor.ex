@@ -8,8 +8,9 @@ defmodule PhoenixKitAgent.Telegram.Supervisor do
     * `PhoenixKitAgent.Telegram.Registry` and
       `PhoenixKitAgent.Telegram.QueueSupervisor` — the queue of each active
       chat, at most 20 at a time;
-    * `PhoenixKitAgent.Telegram.TaskSupervisor` — the turns of the queues and
-      the replies that need no turn;
+    * `PhoenixKitAgent.Telegram.TaskSupervisor` — the turns of the queues;
+    * `PhoenixKitAgent.Telegram.ReplySupervisor` — the replies that need no
+      turn, apart from the turns so that they cannot take their place;
     * `PhoenixKitAgent.Telegram.Reader` — the reader of the bot, last, so
       everything it hands work to is there.
   """
@@ -27,10 +28,19 @@ defmodule PhoenixKitAgent.Telegram.Supervisor do
         {Registry, keys: :unique, name: PhoenixKitAgent.Telegram.Registry},
         {DynamicSupervisor,
          name: PhoenixKitAgent.Telegram.QueueSupervisor, strategy: :one_for_one, max_children: 20},
-        {Task.Supervisor, name: PhoenixKitAgent.Telegram.TaskSupervisor, max_children: 100},
+        Supervisor.child_spec(
+          {Task.Supervisor, name: PhoenixKitAgent.Telegram.TaskSupervisor, max_children: 100},
+          id: :turn_supervisor
+        ),
+        Supervisor.child_spec(
+          {Task.Supervisor, name: PhoenixKitAgent.Telegram.ReplySupervisor, max_children: 50},
+          id: :reply_supervisor
+        ),
         PhoenixKitAgent.Telegram.Reader
       ],
-      strategy: :one_for_one
+      # The registry names the queues, and the queues start the turns: what
+      # follows a restarted child is restarted with it.
+      strategy: :rest_for_one
     )
   end
 end

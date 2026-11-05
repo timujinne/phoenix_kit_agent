@@ -17,9 +17,10 @@ defmodule PhoenixKitAgent.Telegram.Reader do
   connection_uuid}` and read; `holds?/1` is just that name being registered
   anywhere in the cluster, so it never calls a process (a reader busy in its
   long poll cannot make a caller wait). A second node that does not get the
-  name does not read and tries again in 30 seconds. Switching off waits for
-  the long poll in progress to end, then releases the name. Another bot starts
-  from its own offset.
+  name does not read and tries again in 30 seconds. So does a reader that
+  lost the name when a netsplit healed (`:global` tells it, and it checks the
+  name before each poll). Switching off waits for the long poll in progress
+  to end, then releases the name. Another bot starts from its own offset.
 
   ## The offset
 
@@ -129,6 +130,15 @@ defmodule PhoenixKitAgent.Telegram.Reader do
     {:noreply, state}
   end
 
+  # After a netsplit heals, `:global` keeps one holder of the name and tells
+  # the other: that one stops reading (it is `standby` at its next step).
+  def handle_info({:global_name_conflict, name}, %{connection: connection} = state)
+      when is_binary(connection) do
+    if name == name_of(connection),
+      do: {:noreply, %{state | registered?: false}},
+      else: {:noreply, state}
+  end
+
   def handle_info(_other, state), do: {:noreply, state}
 
   @impl GenServer
@@ -200,7 +210,15 @@ defmodule PhoenixKitAgent.Telegram.Reader do
 
   defp unregister(state), do: state
 
-  defp acquire_and_poll(%{registered?: true} = state), do: poll(state)
+  # Before each poll the name is checked to be this process's still.
+  defp acquire_and_poll(%{registered?: true} = state) do
+    if :global.whereis_name(name_of(state.connection)) == self() do
+      poll(state)
+    else
+      put_status(:standby)
+      {%{state | registered?: false}, @idle_ms}
+    end
+  end
 
   defp acquire_and_poll(state) do
     name = name_of(state.connection)

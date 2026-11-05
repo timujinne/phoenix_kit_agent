@@ -7,7 +7,9 @@ defmodule PhoenixKitAgent.Telegram.Limiter do
       not a database lookup each (`unlinked?/2`, `put_unlinked/2`);
     * the answer "link your chat on the site" goes to a chat once in 10
       minutes and at most 20 times a minute for the whole bot
-      (`allow_unlinked_reply?/2`).
+      (`allow_unlinked_reply?/2`);
+    * a linked chat gets an answer that needs no turn (help, a refusal, "wait")
+      once in 3 seconds (`allow_quick_reply?/2`).
 
   A table is owned by this process (started by `PhoenixKitAgent.Telegram.Supervisor`);
   without it every question is answered as if there was nothing remembered,
@@ -19,6 +21,7 @@ defmodule PhoenixKitAgent.Telegram.Limiter do
   @table __MODULE__
   @unlinked_ttl_ms 60_000
   @reply_every_ms 600_000
+  @quick_every_ms 3_000
   @replies_per_minute 20
   @sweep_ms 60_000
 
@@ -54,6 +57,22 @@ defmodule PhoenixKitAgent.Telegram.Limiter do
       (chat_allowed?(connection_uuid, chat_id) and bot_allowed?(connection_uuid))
   end
 
+  @doc "Whether a linked chat may get an answer that needs no turn now; when it may, it is counted."
+  @spec allow_quick_reply?(String.t(), integer()) :: boolean()
+  def allow_quick_reply?(connection_uuid, chat_id) do
+    key = {:quick, connection_uuid, chat_id}
+
+    if live?(lookup(key)) do
+      false
+    else
+      insert(key, now() + quick_every_ms())
+      true
+    end
+  end
+
+  # A chat is marked answered before the bot's budget is looked at: a chat the
+  # budget refused is not answered later either (a flood from many strangers
+  # does not get a second chance each minute).
   defp chat_allowed?(connection_uuid, chat_id) do
     key = {:replied, connection_uuid, chat_id}
 
@@ -87,6 +106,7 @@ defmodule PhoenixKitAgent.Telegram.Limiter do
     :ets.select_delete(@table, [
       {{{:unlinked, :_, :_}, :"$1"}, [{:<, :"$1", horizon}], [true]},
       {{{:replied, :_, :_}, :"$1"}, [{:<, :"$1", horizon}], [true]},
+      {{{:quick, :_, :_}, :"$1"}, [{:<, :"$1", horizon}], [true]},
       {{{:budget, :_, :"$2"}, :_}, [{:<, :"$2", minute}], [true]}
     ])
 
@@ -95,6 +115,9 @@ defmodule PhoenixKitAgent.Telegram.Limiter do
   end
 
   def handle_info(_other, state), do: {:noreply, state}
+
+  defp quick_every_ms,
+    do: Application.get_env(:phoenix_kit_agent, :telegram_quick_reply_ms, @quick_every_ms)
 
   defp schedule_sweep, do: Process.send_after(self(), :sweep, @sweep_ms)
 
@@ -117,5 +140,9 @@ defmodule PhoenixKitAgent.Telegram.Limiter do
     :ok
   end
 
-  defp now, do: System.system_time(:millisecond)
+  # `:telegram_now_ms` stands in for the clock in tests.
+  defp now,
+    do:
+      Application.get_env(:phoenix_kit_agent, :telegram_now_ms) ||
+        System.system_time(:millisecond)
 end

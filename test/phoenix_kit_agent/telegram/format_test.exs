@@ -27,7 +27,34 @@ defmodule PhoenixKitAgent.Telegram.FormatTest do
     end
   end
 
+  describe "plain/1 and addresses" do
+    test "underscores inside an address stay" do
+      assert Format.plain("See https://shop.example/a__b/c now") ==
+               "See https://shop.example/a__b/c now"
+    end
+
+    test "emphasis around an address goes, the address stays" do
+      assert Format.plain("**https://shop.example/a__b**") == "https://shop.example/a__b"
+
+      assert Format.plain("__bold__ and https://x.example/p__q") ==
+               "bold and https://x.example/p__q"
+    end
+
+    test "the address of a link with underscores is kept" do
+      assert Format.plain("[Orders](https://x.example/orders__all)") ==
+               "Orders https://x.example/orders__all"
+    end
+  end
+
   describe "chunks/2" do
+    test "a character of several code points is not cut" do
+      flag = "🇪🇪"
+      parts = Format.chunks(String.duplicate(flag, 3), 5)
+
+      assert parts == [flag, flag, flag]
+      assert Enum.all?(parts, &(Format.units(&1) <= 5))
+    end
+
     test "a short text is one message" do
       assert Format.chunks("Hello") == ["Hello"]
       assert Format.chunks("") == []

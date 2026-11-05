@@ -42,11 +42,15 @@ defmodule PhoenixKitAgent.Telegram.ReaderTest do
 
   defp cycle, do: Reader.cycle(@reader)
 
-  # The replies of the bridge run in tasks: let them end before the database goes.
+  # The replies of the bridge run in tasks: let them end before the database goes
+  # (and before the next test listens).
   defp settle_jobs(tries \\ 100) do
-    sup = PhoenixKitAgent.Telegram.TaskSupervisor
+    supervisors = [
+      PhoenixKitAgent.Telegram.TaskSupervisor,
+      PhoenixKitAgent.Telegram.ReplySupervisor
+    ]
 
-    if tries > 0 and Task.Supervisor.children(sup) != [] do
+    if tries > 0 and Enum.any?(supervisors, &(Task.Supervisor.children(&1) != [])) do
       Process.sleep(20)
       settle_jobs(tries - 1)
     end
@@ -260,6 +264,107 @@ defmodule PhoenixKitAgent.Telegram.ReaderTest do
     end
   end
 
+  describe "owning the name" do
+    test "a reader that lost the name after a netsplit stops reading", ctx do
+      assert {:reading, 0} = cycle()
+      _ = polls()
+      name = Reader.name_of(ctx.connection)
+
+      # What `:global` does when two partitions joined: the name stays with
+      # the other node's process, and the loser is told.
+      winner = spawn_link(fn -> receive do: (:stop -> :ok) end)
+      :global.unregister_name(name)
+      :yes = :global.register_name(name, winner)
+      send(Process.whereis(@reader), {:global_name_conflict, name})
+
+      assert {:standby, 30_000} = cycle()
+      assert polls() == []
+      assert :global.whereis_name(name) == winner
+
+      send(winner, :stop)
+    end
+
+    test "even a message that did not come is no reason to read a bot someone else holds",
+         ctx do
+      assert {:reading, 0} = cycle()
+      _ = polls()
+      name = Reader.name_of(ctx.connection)
+
+      winner = spawn_link(fn -> receive do: (:stop -> :ok) end)
+      :global.unregister_name(name)
+      :yes = :global.register_name(name, winner)
+
+      assert {:standby, 30_000} = cycle()
+      assert polls() == []
+
+      send(winner, :stop)
+    end
+
+    test "when the name is free again the reader takes it and reads", ctx do
+      assert {:reading, 0} = cycle()
+      name = Reader.name_of(ctx.connection)
+      winner = spawn(fn -> receive do: (:stop -> :ok) end)
+      :global.unregister_name(name)
+      :yes = :global.register_name(name, winner)
+      send(Process.whereis(@reader), {:global_name_conflict, name})
+      assert {:standby, 30_000} = cycle()
+
+      send(winner, :stop)
+      await_name_free(name)
+      _ = polls()
+
+      assert {:reading, 0} = cycle()
+      assert [%{timeout: 25}] = polls()
+      assert :global.whereis_name(name) == Process.whereis(@reader)
+    end
+
+    test "a conflict message about another name changes nothing", ctx do
+      assert {:reading, 0} = cycle()
+      send(Process.whereis(@reader), {:global_name_conflict, {Reader, "another-bot"}})
+
+      assert {:reading, 0} = cycle()
+    end
+  end
+
+  defp await_name_free(name, tries \\ 100) do
+    if tries > 0 and :global.whereis_name(name) != :undefined do
+      Process.sleep(10)
+      await_name_free(name, tries - 1)
+    end
+  end
+
+  describe "an update that cannot be handled" do
+    test "is logged by its class and update_id, never by its text, and the batch goes on" do
+      # No supervisor to answer a stranger: handing the update on fails.
+      supervisor = PhoenixKitAgent.Telegram.Supervisor
+      :ok = Supervisor.terminate_child(supervisor, :reply_supervisor)
+      on_exit(fn -> Supervisor.restart_child(supervisor, :reply_supervisor) end)
+
+      TelegramClient.set(:updates, [
+        {:ok,
+         [
+           TelegramClient.update(777, "SECRET-TEXT-ONE", id: 77),
+           TelegramClient.update(778, "SECRET-TEXT-TWO", id: 78)
+         ]}
+      ])
+
+      log = capture_log([level: :warning], fn -> assert {:reading, 0} = cycle() end)
+
+      assert log =~ "telegram update failed: :exit update_id=77"
+      assert log =~ "update_id=78"
+      refute log =~ "SECRET-TEXT"
+    end
+
+    test "a batch whose offset cannot be taken is not handed on, and is read again later", ctx do
+      TelegramClient.set(:updates, [{:ok, [%{"message" => %{"text" => "SECRET-TEXT"}}]}])
+
+      assert {:error, 5_000} = cycle()
+
+      assert Config.telegram_offset(ctx.connection) == nil
+      refute_received {:tg, {:send_message, _, _, _}}
+    end
+  end
+
   describe "trouble" do
     test "a conflict: 60 seconds, the status, one warning in ten minutes" do
       TelegramClient.set(:updates, [
@@ -305,6 +410,7 @@ defmodule PhoenixKitAgent.Telegram.ReaderTest do
       defmodule Exploding do
         @behaviour PhoenixKitAgent.Telegram.Client
         def connection_uuid, do: raise("SECRET-REASON")
+        def bot_username(_), do: nil
         def webhook_set?(_), do: false
         def get_updates(_, _), do: {:ok, []}
         def send_message(_, _, _), do: {:ok, %{}}

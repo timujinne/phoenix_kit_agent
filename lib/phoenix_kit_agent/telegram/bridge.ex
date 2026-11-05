@@ -15,6 +15,12 @@ defmodule PhoenixKitAgent.Telegram.Bridge do
   minutes, with a budget of twenty such answers a minute for the bot
   (`PhoenixKitAgent.Telegram.Limiter`).
 
+  The answers that need no turn run under their own task supervisor
+  (`PhoenixKitAgent.Telegram.ReplySupervisor`), so they cannot take the place
+  of a turn. `handle_update/3` reads the database (the link) and remembers an
+  unlinked chat in the limiter's table, but changes nothing else and sends
+  nothing.
+
   A linked person's message becomes a job for the serial queue of their chat
   (`PhoenixKitAgent.Telegram.ChatQueue`): `:turn` for text, `:new` for `/new`;
   `/help` and a bare `/start` are the help; a forwarded message and anything
@@ -81,7 +87,7 @@ defmodule PhoenixKitAgent.Telegram.Bridge do
         :ok
 
       {:static, {:telegram_link, user_uuid, _, chat_id}, chat_id, message_id, kind} ->
-        async(fn -> reply(connection_uuid, chat_id, user_uuid, kind, message_id) end)
+        quick_reply(connection_uuid, chat_id, user_uuid, kind, message_id)
 
       {:job, {:telegram_link, user_uuid, _, chat_id} = ref, job} ->
         case ChatQueue.submit(connection_uuid, ref, job) do
@@ -89,13 +95,28 @@ defmodule PhoenixKitAgent.Telegram.Bridge do
             :ok
 
           :full ->
-            async(fn -> reply(connection_uuid, chat_id, user_uuid, :wait, job.message_id) end)
+            quick_reply(connection_uuid, chat_id, user_uuid, :wait, job.message_id)
 
           :busy ->
-            async(fn -> reply(connection_uuid, chat_id, user_uuid, :bot_busy, job.message_id) end)
+            quick_reply(connection_uuid, chat_id, user_uuid, :bot_busy, job.message_id)
         end
     end
   end
+
+  # The answer of a linked person that needs no turn: once in a few seconds
+  # for a chat (a flood of `/help` is not answered each time), and never on
+  # the supervisor that runs the turns.
+  defp quick_reply(connection_uuid, chat_id, user_uuid, kind, message_id) do
+    if Limiter.allow_quick_reply?(connection_uuid, chat_id),
+      do: async(fn -> reply(connection_uuid, chat_id, user_uuid, kind, message_id) end),
+      else: :ok
+  end
+
+  @doc false
+  # The "bot is busy" answer for a job that could not be run.
+  @spec busy(String.t(), ref(), map()) :: :ok
+  def busy(connection_uuid, {:telegram_link, user_uuid, _, chat_id}, job),
+    do: async(fn -> reply(connection_uuid, chat_id, user_uuid, :bot_busy, job.message_id) end)
 
   @doc """
   The locale to speak to `user_uuid` in: theirs, else the site's; the site's
@@ -255,7 +276,7 @@ defmodule PhoenixKitAgent.Telegram.Bridge do
   end
 
   defp async(fun) do
-    _ = Task.Supervisor.start_child(PhoenixKitAgent.Telegram.TaskSupervisor, fun)
+    _ = Task.Supervisor.start_child(PhoenixKitAgent.Telegram.ReplySupervisor, fun)
     :ok
   end
 

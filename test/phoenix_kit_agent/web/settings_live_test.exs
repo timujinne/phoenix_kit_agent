@@ -695,6 +695,21 @@ defmodule PhoenixKitAgent.Web.SettingsLiveTest do
              )
     end
 
+    test "the status line names the bot", %{conn: conn} do
+      TelegramClient.set(:connection, UUIDv7.generate())
+      TelegramClient.set(:bot_username, "shop_helper_bot")
+
+      {:ok, view, _html} = live(conn, @path)
+
+      assert has_element?(view, "#agent-telegram-bot", "@shop_helper_bot")
+    end
+
+    test "no bot name when no bot is chosen", %{conn: conn} do
+      {:ok, view, _html} = live(conn, @path)
+
+      refute has_element?(view, "#agent-telegram-bot")
+    end
+
     test "the status line follows the state", %{conn: conn} do
       {:ok, view, _html} = live(conn, @path)
 

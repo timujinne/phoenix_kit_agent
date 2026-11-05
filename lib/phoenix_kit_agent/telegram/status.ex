@@ -20,6 +20,16 @@ defmodule PhoenixKitAgent.Telegram.Status do
 
   @type t :: :off | :no_bot | :webhook | :conflict | :no_model | :reading | :starting
 
+  @doc "The `@username` of the bot (without the `@`), or `nil` when no bot is chosen or it cannot be told."
+  @spec bot() :: String.t() | nil
+  def bot do
+    with connection when is_binary(connection) <- Client.impl().connection_uuid() do
+      Client.impl().bot_username(connection)
+    end
+  rescue
+    _ -> nil
+  end
+
   @doc "The state now."
   @spec current() :: t()
   def current do

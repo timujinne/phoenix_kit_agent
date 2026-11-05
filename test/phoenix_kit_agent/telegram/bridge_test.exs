@@ -172,12 +172,37 @@ defmodule PhoenixKitAgent.Telegram.BridgeTest do
       assert Limiter.allow_unlinked_reply?(connection, 2)
     end
 
-    test "twenty a minute for the bot" do
+    test "twenty a minute for the bot, and a new minute starts again" do
+      # A clock that stands still, so that the minute cannot change in the middle.
+      minute_start = div(System.system_time(:millisecond), 60_000) * 60_000
+      Application.put_env(:phoenix_kit_agent, :telegram_now_ms, minute_start)
+      on_exit(fn -> Application.delete_env(:phoenix_kit_agent, :telegram_now_ms) end)
+
       connection = UUIDv7.generate()
       allowed = for chat <- 1..30, do: Limiter.allow_unlinked_reply?(connection, chat)
 
       assert Enum.count(allowed, & &1) == 20
       assert Limiter.allow_unlinked_reply?(UUIDv7.generate(), 1)
+
+      Application.put_env(:phoenix_kit_agent, :telegram_now_ms, minute_start + 60_000)
+      assert Limiter.allow_unlinked_reply?(connection, 31)
+    end
+
+    test "a linked chat gets an answer without a turn once in a while" do
+      connection = UUIDv7.generate()
+      Application.put_env(:phoenix_kit_agent, :telegram_quick_reply_ms, 3_000)
+      on_exit(fn -> Application.put_env(:phoenix_kit_agent, :telegram_quick_reply_ms, 0) end)
+
+      now = System.system_time(:millisecond)
+      Application.put_env(:phoenix_kit_agent, :telegram_now_ms, now)
+      on_exit(fn -> Application.delete_env(:phoenix_kit_agent, :telegram_now_ms) end)
+
+      assert Limiter.allow_quick_reply?(connection, 1)
+      refute Limiter.allow_quick_reply?(connection, 1)
+      assert Limiter.allow_quick_reply?(connection, 2)
+
+      Application.put_env(:phoenix_kit_agent, :telegram_now_ms, now + 3_001)
+      assert Limiter.allow_quick_reply?(connection, 1)
     end
   end
 end
