@@ -35,9 +35,9 @@ defmodule PhoenixKitAgent.Telegram.FlowTest do
     end_queues()
 
     on_exit(fn ->
-      TelegramClient.stop()
       stop_all_turns()
       end_queues()
+      TelegramClient.stop()
       ModuleRegistry.unregister(Tools)
       Application.delete_env(:phoenix_kit_ai, :req_options)
       Req.Test.set_req_test_to_private()
@@ -574,6 +574,34 @@ defmodule PhoenixKitAgent.Telegram.FlowTest do
       refute Settings.get_setting("agenttest_written")
     end
 
+    test "a tool the model made up is not a refused change: 👍", ctx do
+      call = %{
+        "id" => "x1",
+        "type" => "function",
+        "function" => %{"name" => "no_such_tool", "arguments" => "{}"}
+      }
+
+      Req.Test.expect(@stub, fn conn ->
+        Req.Test.json(conn, %{
+          "model" => @model,
+          "choices" => [
+            %{
+              "message" => %{"role" => "assistant", "content" => nil, "tool_calls" => [call]},
+              "finish_reason" => "tool_calls"
+            }
+          ],
+          "usage" => %{"prompt_tokens" => 20, "completion_tokens" => 9, "total_tokens" => 29}
+        })
+      end)
+
+      model_says("Here is your answer.")
+      send_update(ctx, "Anything", message_id: 8)
+
+      calls = calls_until(reaction?("👍"))
+
+      assert texts(calls) == ["Here is your answer."]
+    end
+
     test "a turn that never says it has ended is given up on with a notice", ctx do
       Application.put_env(:phoenix_kit_agent, :telegram_turn_wait_ms, 300)
       on_exit(fn -> Application.delete_env(:phoenix_kit_agent, :telegram_turn_wait_ms) end)
@@ -657,6 +685,56 @@ defmodule PhoenixKitAgent.Telegram.FlowTest do
 
       assert {:react, _, @chat, 2, "🤷"} =
                List.last(calls_until(&match?({:react, _, _, 2, _}, &1)))
+    end
+  end
+
+  describe "a task supervisor that is restarting" do
+    test "the message is answered 'busy' and the queue stays", ctx do
+      supervisor = PhoenixKitAgent.Telegram.Supervisor
+      :ok = Supervisor.terminate_child(supervisor, :turn_supervisor)
+      on_exit(fn -> Supervisor.restart_child(supervisor, :turn_supervisor) end)
+
+      send_update(ctx, "Hello", message_id: 1)
+      calls = calls_until(reaction?("🤷"))
+
+      assert texts(calls) == [Texts.static(:bot_busy)]
+
+      assert [{queue, _}] =
+               Registry.lookup(PhoenixKitAgent.Telegram.Registry, {ctx.connection, @chat})
+
+      assert Process.alive?(queue)
+    end
+  end
+
+  describe "a refusal right after another reply" do
+    test "is still told, with its reaction", ctx do
+      Application.put_env(:phoenix_kit_agent, :telegram_quick_reply_ms, 60_000)
+      on_exit(fn -> Application.put_env(:phoenix_kit_agent, :telegram_quick_reply_ms, 0) end)
+
+      supervisor = PhoenixKitAgent.Telegram.QueueSupervisor
+
+      pids =
+        for _ <- 1..20 do
+          {:ok, pid} =
+            DynamicSupervisor.start_child(supervisor, %{
+              id: make_ref(),
+              start: {Agent, :start_link, [fn -> :busy end]},
+              restart: :temporary
+            })
+
+          pid
+        end
+
+      on_exit(fn -> Enum.each(pids, &DynamicSupervisor.terminate_child(supervisor, &1)) end)
+
+      send_update(ctx, "/help", message_id: 1)
+      assert [help] = texts(calls_until(&match?({:send_message, _, _, _}, &1)))
+      assert help == Texts.static(:help)
+
+      send_update(ctx, "Hello", message_id: 2)
+      calls = calls_until(reaction?("🤷"))
+
+      assert texts(calls) == [Texts.static(:bot_busy)]
     end
   end
 

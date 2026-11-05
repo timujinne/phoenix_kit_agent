@@ -102,11 +102,14 @@ defmodule PhoenixKitAgent.Telegram.Format do
   end
 
   # By characters as a person sees them (a flag or a letter with its accents
-  # stays whole), so a surrogate pair is never cut either.
+  # stays whole), so a surrogate pair is never cut either; a "character" that
+  # alone is longer than a message (a run of combining marks) is cut by code
+  # points.
   defp by_characters(word, limit) do
     {parts, current, _units} =
       word
       |> String.graphemes()
+      |> Enum.flat_map(&if(units(&1) > limit, do: String.codepoints(&1), else: [&1]))
       |> Enum.reduce({[], "", 0}, fn grapheme, {parts, current, size} ->
         width = units(grapheme)
 

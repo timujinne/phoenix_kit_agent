@@ -197,12 +197,14 @@ defmodule PhoenixKitAgent.Telegram.BridgeTest do
       Application.put_env(:phoenix_kit_agent, :telegram_now_ms, now)
       on_exit(fn -> Application.delete_env(:phoenix_kit_agent, :telegram_now_ms) end)
 
-      assert Limiter.allow_quick_reply?(connection, 1)
-      refute Limiter.allow_quick_reply?(connection, 1)
-      assert Limiter.allow_quick_reply?(connection, 2)
+      assert Limiter.allow_quick_reply?(connection, 1, :help)
+      refute Limiter.allow_quick_reply?(connection, 1, :help)
+      assert Limiter.allow_quick_reply?(connection, 2, :help)
+      # A refusal right after the help is still told.
+      assert Limiter.allow_quick_reply?(connection, 1, :wait)
 
       Application.put_env(:phoenix_kit_agent, :telegram_now_ms, now + 3_001)
-      assert Limiter.allow_quick_reply?(connection, 1)
+      assert Limiter.allow_quick_reply?(connection, 1, :help)
     end
   end
 end

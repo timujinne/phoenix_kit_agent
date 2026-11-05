@@ -104,10 +104,10 @@ defmodule PhoenixKitAgent.Telegram.Bridge do
   end
 
   # The answer of a linked person that needs no turn: once in a few seconds
-  # for a chat (a flood of `/help` is not answered each time), and never on
+  # for a chat and a kind of answer (a flood of `/help` is not answered each time), and never on
   # the supervisor that runs the turns.
   defp quick_reply(connection_uuid, chat_id, user_uuid, kind, message_id) do
-    if Limiter.allow_quick_reply?(connection_uuid, chat_id),
+    if Limiter.allow_quick_reply?(connection_uuid, chat_id, kind),
       do: async(fn -> reply(connection_uuid, chat_id, user_uuid, kind, message_id) end),
       else: :ok
   end

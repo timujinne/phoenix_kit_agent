@@ -465,10 +465,16 @@ defmodule PhoenixKitAgent.Web.SettingsLive do
 
   # What the Telegram section shows: the switch and what the reader is doing.
   defp assign_telegram(socket) do
+    enabled? = Config.telegram_enabled?()
+
+    # The bot's name may be a question to Telegram: not on the static render,
+    # and not while the switch is off.
+    bot = if enabled? and connected?(socket), do: Status.bot()
+
     assign(socket,
-      telegram?: Config.telegram_enabled?(),
+      telegram?: enabled?,
       telegram_status: Status.current(),
-      telegram_bot: Status.bot()
+      telegram_bot: bot
     )
   end
 

@@ -46,6 +46,16 @@ defmodule PhoenixKitAgent.Telegram.FormatTest do
     end
   end
 
+  describe "chunks/2 and a character longer than a message" do
+    test "is cut by code points, with no empty part" do
+      long = "e" <> String.duplicate("\u0301", 10)
+      parts = Format.chunks(long, 4)
+
+      assert Enum.all?(parts, &(&1 != "" and Format.units(&1) <= 4))
+      assert Enum.join(parts) == long
+    end
+  end
+
   describe "chunks/2" do
     test "a character of several code points is not cut" do
       flag = "🇪🇪"

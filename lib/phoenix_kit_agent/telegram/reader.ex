@@ -212,12 +212,9 @@ defmodule PhoenixKitAgent.Telegram.Reader do
 
   # Before each poll the name is checked to be this process's still.
   defp acquire_and_poll(%{registered?: true} = state) do
-    if :global.whereis_name(name_of(state.connection)) == self() do
-      poll(state)
-    else
-      put_status(:standby)
-      {%{state | registered?: false}, @idle_ms}
-    end
+    if :global.whereis_name(name_of(state.connection)) == self(),
+      do: poll(state),
+      else: lost_the_name(state)
   end
 
   defp acquire_and_poll(state) do
@@ -253,7 +250,21 @@ defmodule PhoenixKitAgent.Telegram.Reader do
     {%{state | backoff_s: @min_backoff_s}, 0}
   end
 
+  # The name may have gone to another reader while this one was in its long
+  # poll: the batch is then left to the one that holds it (the offset is not
+  # moved, and no link is made).
   defp handle_batch(state, updates) do
+    if :global.whereis_name(name_of(state.connection)) == self(),
+      do: process_batch(state, updates),
+      else: lost_the_name(state)
+  end
+
+  defp lost_the_name(state) do
+    put_status(:standby)
+    {%{state | registered?: false}, @idle_ms}
+  end
+
+  defp process_batch(state, updates) do
     # Core confirms the batch (stores our offset) before it tells anyone of a link.
     confirm = fn _updates -> store_offset(state.connection, updates) end
 

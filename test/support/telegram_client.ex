@@ -7,7 +7,9 @@ defmodule PhoenixKitAgent.Test.TelegramClient do
     * `connection_uuid`, `bot_username`, `webhook_set?` — `set(:connection, uuid)`,
       `set(:bot_username, name)` and `set(:webhook, boolean)`;
     * `get_updates` — the next element of `set(:updates, [answer, …])` (each
-      `{:ok, [update]}` or `{:error, reason}`; `{:ok, []}` once it is empty);
+      `{:ok, [update]}` or `{:error, reason}`, or a function of no arguments that
+      runs while "Telegram" is being asked and answers so; `{:ok, []}` once it
+      is empty);
     * `send_message` — `set(:send, fun)` with `fun.(chat_id, text)` answering
       `{:ok, %{}}` or `{:error, reason}` (default: ok);
     * `react` — `set(:react, fun)` with `fun.(chat_id, message_id, emoji)`
@@ -51,7 +53,12 @@ defmodule PhoenixKitAgent.Test.TelegramClient do
   def connection_uuid, do: Agent.get(script(), & &1.connection)
 
   @impl true
-  def bot_username(_uuid), do: Agent.get(script(), &Map.get(&1, :bot_username))
+  def bot_username(_uuid) do
+    case Agent.get(script(), &Map.get(&1, :bot_username)) do
+      fun when is_function(fun, 0) -> fun.()
+      name -> name
+    end
+  end
 
   @impl true
   def webhook_set?(uuid) do
@@ -67,6 +74,10 @@ defmodule PhoenixKitAgent.Test.TelegramClient do
       %{updates: [next | rest]} = state -> {next, %{state | updates: rest}}
       %{updates: []} = state -> {{:ok, []}, state}
     end)
+    |> case do
+      fun when is_function(fun, 0) -> fun.()
+      answer -> answer
+    end
   end
 
   @impl true

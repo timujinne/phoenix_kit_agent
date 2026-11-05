@@ -9,7 +9,7 @@ defmodule PhoenixKitAgent.Telegram.Limiter do
       minutes and at most 20 times a minute for the whole bot
       (`allow_unlinked_reply?/2`);
     * a linked chat gets an answer that needs no turn (help, a refusal, "wait")
-      once in 3 seconds (`allow_quick_reply?/2`).
+      once in 3 seconds for each kind of answer (`allow_quick_reply?/3`).
 
   A table is owned by this process (started by `PhoenixKitAgent.Telegram.Supervisor`);
   without it every question is answered as if there was nothing remembered,
@@ -57,10 +57,14 @@ defmodule PhoenixKitAgent.Telegram.Limiter do
       (chat_allowed?(connection_uuid, chat_id) and bot_allowed?(connection_uuid))
   end
 
-  @doc "Whether a linked chat may get an answer that needs no turn now; when it may, it is counted."
-  @spec allow_quick_reply?(String.t(), integer()) :: boolean()
-  def allow_quick_reply?(connection_uuid, chat_id) do
-    key = {:quick, connection_uuid, chat_id}
+  @doc """
+  Whether a linked chat may get an answer of this `kind` that needs no turn
+  now; when it may, it is counted. Each kind has its own pace, so a `/help`
+  does not silence the "wait" that refuses the next message.
+  """
+  @spec allow_quick_reply?(String.t(), integer(), atom()) :: boolean()
+  def allow_quick_reply?(connection_uuid, chat_id, kind) do
+    key = {:quick, connection_uuid, chat_id, kind}
 
     if live?(lookup(key)) do
       false
@@ -106,7 +110,7 @@ defmodule PhoenixKitAgent.Telegram.Limiter do
     :ets.select_delete(@table, [
       {{{:unlinked, :_, :_}, :"$1"}, [{:<, :"$1", horizon}], [true]},
       {{{:replied, :_, :_}, :"$1"}, [{:<, :"$1", horizon}], [true]},
-      {{{:quick, :_, :_}, :"$1"}, [{:<, :"$1", horizon}], [true]},
+      {{{:quick, :_, :_, :_}, :"$1"}, [{:<, :"$1", horizon}], [true]},
       {{{:budget, :_, :"$2"}, :_}, [{:<, :"$2", minute}], [true]}
     ])
 

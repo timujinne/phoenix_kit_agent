@@ -282,14 +282,16 @@ and `Web.Markdown`).
   all, overflow texts "wait" / "busy") and the turns in
   `PhoenixKitAgent.Telegram.TaskSupervisor`; the replies that need no turn run
   under their own `ReplySupervisor` and come to a linked chat once in 3 s at
-  most (`Limiter.allow_quick_reply?/2`). A queue that cannot start a turn (the
+  most for each kind (`Limiter.allow_quick_reply?/3`: a refusal is still told
+  right after a help). A queue that cannot start a turn (the
   supervisor is full) answers "busy" and stays. A turn (`Telegram.Turn`)
   subscribes to `agent:conv:<uuid>` **before** `Turns.start/6`, shows 👀, sends
   `typing` every 4 s, then `Conversations.turn_result/2` becomes the answer
   (markdown cleaned to plain text by `Format`, addresses left whole, cut to
   4096 UTF-16 units, one message a second, one retry on a 429) with 👍 — only
-  when it was sent and no tool of the turn was denied (a request to change
-  something, `Conversations.turn_denied?/2`) — or a notice / refusal in the
+  when it was sent and no write tool of the turn was denied (a request to change
+  something, `Conversations.turn_denied?/2`; a made-up or refused read tool is
+  not one) — or a notice / refusal in the
   user's language (`Telegram.Texts`, `RecipientLocale`) with 🤷. A chat nobody
   linked is remembered for 60 s (`Limiter`) and told once per 10 minutes,
   20 such replies a minute per bot. Nothing of an update's text or the bot's

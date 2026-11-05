@@ -102,7 +102,9 @@ defmodule PhoenixKitAgent.Conversations do
 
   import Ecto.Query, only: [from: 2]
 
+  alias PhoenixKit.API.ControlFields
   alias PhoenixKit.API.Executor
+  alias PhoenixKit.API.Registry
   alias PhoenixKit.Integrations.Telegram.Linking
   alias PhoenixKit.PubSub.Manager, as: PubSub
   alias PhoenixKit.RepoHelper
@@ -246,8 +248,9 @@ defmodule PhoenixKitAgent.Conversations do
   def turn_result(_conversation_uuid, _turn_ref), do: :none
 
   @doc false
-  # Whether the turn asked for a tool that was refused ("denied"): for a
+  # Whether the turn asked for a write tool and was refused ("denied"): for a
   # Telegram chat, which is offered no write, a request to change something.
+  # A refused read tool, or a name the model made up, is not one.
   @spec turn_denied?(term(), term()) :: boolean()
   def turn_denied?(conversation_uuid, turn_ref) when is_binary(turn_ref) do
     case Ecto.UUID.cast(conversation_uuid) do
@@ -255,9 +258,11 @@ defmodule PhoenixKitAgent.Conversations do
         from(m in Message,
           where:
             m.conversation_uuid == ^uuid and m.turn_ref == ^turn_ref and m.role == "tool" and
-              m.tool_outcome == "denied"
+              m.tool_outcome == "denied",
+          select: m.tool_name
         )
-        |> repo().exists?()
+        |> repo().all()
+        |> Enum.any?(&write_tool?/1)
 
       :error ->
         false
@@ -265,6 +270,13 @@ defmodule PhoenixKitAgent.Conversations do
   end
 
   def turn_denied?(_conversation_uuid, _turn_ref), do: false
+
+  defp write_tool?(name) do
+    case Registry.find(name, :admin) do
+      {:ok, tool} -> ControlFields.write_tool?(tool)
+      _unknown -> false
+    end
+  end
 
   defp result_of_turn(messages) do
     notice = messages |> Enum.filter(&(&1.role == "notice" and present?(&1.error))) |> List.last()

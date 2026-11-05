@@ -318,6 +318,26 @@ defmodule PhoenixKitAgent.Telegram.ReaderTest do
       assert :global.whereis_name(name) == Process.whereis(@reader)
     end
 
+    test "a batch taken after the name was lost in the long poll is left alone", ctx do
+      name = Reader.name_of(ctx.connection)
+      winner = spawn_link(fn -> receive do: (:stop -> :ok) end)
+
+      # While the reader waits for Telegram, the name goes to another reader.
+      TelegramClient.set(:updates, [
+        fn ->
+          :global.unregister_name(name)
+          :yes = :global.register_name(name, winner)
+          {:ok, [stranger_update(61)]}
+        end
+      ])
+
+      assert {:standby, 30_000} = cycle()
+      assert Config.telegram_offset(ctx.connection) == nil
+      refute_received {:tg, {:send_message, _, _, _}}
+
+      send(winner, :stop)
+    end
+
     test "a conflict message about another name changes nothing", ctx do
       assert {:reading, 0} = cycle()
       send(Process.whereis(@reader), {:global_name_conflict, {Reader, "another-bot"}})

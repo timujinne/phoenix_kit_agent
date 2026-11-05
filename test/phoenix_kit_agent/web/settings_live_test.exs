@@ -695,13 +695,25 @@ defmodule PhoenixKitAgent.Web.SettingsLiveTest do
              )
     end
 
-    test "the status line names the bot", %{conn: conn} do
+    test "the status line names the bot once the switch is on", %{conn: conn} do
       TelegramClient.set(:connection, UUIDv7.generate())
       TelegramClient.set(:bot_username, "shop_helper_bot")
+      {:ok, _} = Config.put_telegram_enabled(true, [])
 
       {:ok, view, _html} = live(conn, @path)
 
       assert has_element?(view, "#agent-telegram-bot", "@shop_helper_bot")
+    end
+
+    test "with the switch off Telegram is not asked for the bot's name", %{conn: conn} do
+      TelegramClient.set(:connection, UUIDv7.generate())
+      test = self()
+      TelegramClient.set(:bot_username, fn -> send(test, :asked_for_the_name) end)
+
+      {:ok, view, _html} = live(conn, @path)
+
+      refute has_element?(view, "#agent-telegram-bot")
+      refute_received :asked_for_the_name
     end
 
     test "no bot name when no bot is chosen", %{conn: conn} do

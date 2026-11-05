@@ -77,38 +77,63 @@ defmodule PhoenixKitAgent.Telegram.ChatQueue do
     {:ok, %{connection_uuid: opts[:connection_uuid], waiting: :queue.new(), task: nil, idle: nil}}
   end
 
+  # Every callback runs under `guarded/2`: whatever goes wrong inside ends the
+  # process with an atom for a reason, so no stacktrace (whose first frame
+  # carries the arguments, the job's text among them) reaches a crash report.
+  # The caller of a call that fails hears `:busy`.
   @impl GenServer
-  def handle_call({:enqueue, ref, job}, _from, %{task: nil} = state) do
+  def handle_call({:enqueue, ref, job}, _from, state) do
+    guarded(state, :busy, fn -> enqueue_job(state, ref, job) end)
+  end
+
+  def handle_call(_other, _from, state), do: {:reply, {:error, :unknown}, state}
+
+  @impl GenServer
+  def handle_cast(_other, state), do: {:noreply, state}
+
+  @impl GenServer
+  def handle_info(message, state), do: guarded(state, nil, fn -> info(message, state) end)
+
+  defp enqueue_job(%{task: nil} = state, ref, job) do
     case start(state, ref, job) do
       {:ok, state} -> {:reply, :ok, state}
       :error -> {:reply, :busy, wait_for_idle(state)}
     end
   end
 
-  def handle_call({:enqueue, ref, job}, _from, state) do
+  defp enqueue_job(state, ref, job) do
     if :queue.len(state.waiting) < @max_waiting,
       do: {:reply, :ok, %{state | waiting: :queue.in({ref, job}, state.waiting)}},
       else: {:reply, :full, state}
   end
 
-  @impl GenServer
-  def handle_info({task_ref, _result}, %{task: %Task{ref: task_ref}} = state) do
+  defp info({task_ref, _result}, %{task: %Task{ref: task_ref}} = state) do
     Process.demonitor(task_ref, [:flush])
     {:noreply, next(state)}
   end
 
-  def handle_info(
-        {:DOWN, task_ref, :process, _pid, _reason},
-        %{task: %Task{ref: task_ref}} = state
-      ) do
-    {:noreply, next(state)}
-  end
+  defp info({:DOWN, task_ref, :process, _pid, _reason}, %{task: %Task{ref: task_ref}} = state),
+    do: {:noreply, next(state)}
 
-  def handle_info(:idle, %{task: nil} = state) do
+  defp info(:idle, %{task: nil} = state) do
     if :queue.is_empty(state.waiting), do: {:stop, :normal, state}, else: {:noreply, state}
   end
 
-  def handle_info(_other, state), do: {:noreply, state}
+  defp info(_other, state), do: {:noreply, state}
+
+  defp guarded(state, reply, fun) do
+    fun.()
+  rescue
+    exception -> failed(exception.__struct__, state, reply)
+  catch
+    kind, _reason -> failed(kind, state, reply)
+  end
+
+  defp failed(kind, state, reply) do
+    require Logger
+    Logger.warning("[PhoenixKitAgent] telegram chat queue failed: #{inspect(kind)}")
+    if reply, do: {:stop, :queue_failed, reply, state}, else: {:stop, :queue_failed, state}
+  end
 
   @impl GenServer
   def format_status(status) do
@@ -133,7 +158,14 @@ defmodule PhoenixKitAgent.Telegram.ChatQueue do
     task = Task.Supervisor.async_nolink(@tasks, fn -> Turn.run(connection_uuid, ref, job) end)
     {:ok, %{state | task: task, idle: nil}}
   rescue
-    RuntimeError -> :error
+    exception in RuntimeError ->
+      # Only the full supervisor; any other RuntimeError is a bug, not "busy".
+      if exception.message =~ "maximum number of tasks",
+        do: :error,
+        else: reraise(exception, __STACKTRACE__)
+  catch
+    # The supervisor is restarting.
+    :exit, _reason -> :error
   end
 
   defp next(state) do
