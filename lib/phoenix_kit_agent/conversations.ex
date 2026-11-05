@@ -38,6 +38,44 @@ defmodule PhoenixKitAgent.Conversations do
   conditional `UPDATE` each (the owner's chat, not deleted), so a concurrent
   archive cannot bring a deleted chat back.
 
+  ## A linked Telegram chat
+
+  The reference may also be `{:telegram_link, user_uuid, connection_uuid,
+  chat_id}` (`PhoenixKit.API.Executor`), the chat a person linked to the
+  site's bot. It is built only by `PhoenixKit.Integrations.Telegram.Linking.actor_ref/2`
+  from an update read at the bot, never from text. Instead of the session,
+  its link is checked on every call: the chat is the link of that very user
+  now (`Linking.linked_user/2`; an unlinked, relinked or dropped link is
+  `{:error, :session_gone}`), the user passes the account gate of a session
+  (`SessionRef.scope_for_user/2`, narrowed to the default role, with the same
+  refusals) and holds `agent.telegram` besides `agent` (`{:error,
+  :forbidden}`). `impersonated:` is required all the same; a bridge passes
+  `false`, a chat is never an impersonated session. A chat reads, and where the
+  core lets it (`PhoenixKitAgent.Config.writes?/0`) proposes a change that core
+  holds for the user's confirmation, which the buttons of the bot's card give
+  (`PhoenixKitAgent.Telegram.Press`, `PhoenixKitAgent.Confirmations`); it does
+  not attach (`PhoenixKitAgent.Attachments`).
+
+  A chat reference may read the user's chats (`get_*`, `list_*`, `subscribe/3`),
+  start and stop a turn and settle an interrupted one (`PhoenixKitAgent.Turns`:
+  a turn stores its own messages in the chat it is given, the user's text of
+  that turn included, and a settled turn its notice; the first user message
+  also gives an untitled chat its title, as everywhere, but a turn never
+  changes the status or the metadata); it may not create, rename, archive or
+  delete a chat, add a message through `add_message/4`, or write the personal
+  instructions (`{:error, :not_in_telegram}`).
+
+  `create_conversation_for/2`, `latest_telegram_conversation/1`,
+  `turn_result/2`, `turn_error/2`, `turn_denied?/2`, `put_telegram_card/6` and
+  `telegram_card/2` are the bridge's own, trusted: they take no session and are
+  never to be called from a client's event.
+
+  The cards the bot sent are kept in the chat's metadata
+  (`"telegram_cards"`: confirmation uuid → bot, chat, message), no more than
+  the newest fifty, and a `notice` that settles a card of such a chat is
+  handed to `PhoenixKitAgent.Telegram.Cards` once it is committed, which edits
+  the card in Telegram.
+
   ## Writing
 
   A session writes only its user's text: `add_message/4` stores a `user`
@@ -76,12 +114,18 @@ defmodule PhoenixKitAgent.Conversations do
 
   import Ecto.Query, only: [from: 2]
 
+  alias PhoenixKit.API.ControlFields
+  alias PhoenixKit.API.Executor
+  alias PhoenixKit.API.Registry
+  alias PhoenixKit.Integrations.Telegram.Linking
   alias PhoenixKit.PubSub.Manager, as: PubSub
   alias PhoenixKit.RepoHelper
   alias PhoenixKit.Users.Auth.Scope
   alias PhoenixKit.Users.Auth.SessionRef
+  alias PhoenixKit.Users.Auth.User
   alias PhoenixKitAgent.Config
   alias PhoenixKitAgent.Schemas.{Attachment, Conversation, Message}
+  alias PhoenixKitAgent.Telegram.Cards
   alias PhoenixKitAgent.UserConfig
 
   @page_size 20
@@ -90,8 +134,11 @@ defmodule PhoenixKitAgent.Conversations do
   @max_messages_page_size 200
   @title_from_message 60
 
-  @typedoc "`{session_token_uuid, user_uuid}` from `SessionRef.from_session/1`."
-  @type session_ref :: SessionRef.t()
+  @typedoc """
+  `{session_token_uuid, user_uuid}` from `SessionRef.from_session/1`, or the
+  reference of a linked Telegram chat (see the moduledoc).
+  """
+  @type session_ref :: SessionRef.t() | Executor.telegram_link()
 
   @typedoc "Where the next page of the list starts; opaque, taken from `list_conversations/2`."
   @type cursor :: {DateTime.t(), String.t()}
@@ -110,6 +157,7 @@ defmodule PhoenixKitAgent.Conversations do
           | SessionRef.refusal()
           | :forbidden
           | :not_found
+          | :not_in_telegram
 
   @doc "The PubSub topic of a chat's events."
   @spec topic(String.t()) :: String.t()
@@ -124,12 +172,217 @@ defmodule PhoenixKitAgent.Conversations do
   def create_conversation(session_ref, attrs, opts) when is_map(attrs) do
     title = Map.get(attrs, :title, Map.get(attrs, "title"))
 
-    with_user(session_ref, opts, fn user_uuid ->
-      %Conversation{user_uuid: user_uuid, last_message_at: DateTime.utc_now()}
-      |> Conversation.changeset(%{title: trim(title)})
-      |> repo().insert(log: false)
+    on_the_site(session_ref, fn ->
+      with_user(session_ref, opts, fn user_uuid ->
+        %Conversation{user_uuid: user_uuid, last_message_at: DateTime.utc_now()}
+        |> Conversation.changeset(%{title: trim(title)})
+        |> repo().insert(log: false)
+      end)
     end)
   end
+
+  @doc false
+  # A chat for a user without a session: the bridge of a linked Telegram chat
+  # (see the moduledoc). `metadata` tells the source (`"source" => "telegram"`).
+  # The module's switches are checked when a turn starts, not here.
+  # A user that is not a UUID (or a map without one) is `{:error, :not_found}`,
+  # as `latest_telegram_conversation/1` finds nothing for it.
+  @spec create_conversation_for(User.t() | map() | String.t(), keyword()) ::
+          {:ok, Conversation.t()} | {:error, :not_found | Ecto.Changeset.t()}
+  def create_conversation_for(user, opts \\ [])
+
+  def create_conversation_for(%{uuid: user_uuid}, opts),
+    do: create_conversation_for(user_uuid, opts)
+
+  def create_conversation_for(user_uuid, opts) do
+    case Ecto.UUID.cast(user_uuid) do
+      {:ok, uuid} ->
+        metadata = Keyword.get(opts, :metadata, %{})
+
+        %Conversation{user_uuid: uuid, last_message_at: DateTime.utc_now()}
+        |> Conversation.changeset(%{metadata: metadata})
+        |> repo().insert(log: false)
+
+      :error ->
+        {:error, :not_found}
+    end
+  end
+
+  @doc false
+  # The user's current chat from Telegram: the latest active one that
+  # `create_conversation_for/2` marked `"source" => "telegram"`, or `nil`.
+  @spec latest_telegram_conversation(term()) :: Conversation.t() | nil
+  def latest_telegram_conversation(user_uuid) do
+    case Ecto.UUID.cast(user_uuid) do
+      {:ok, uuid} ->
+        from(c in Conversation,
+          where:
+            c.user_uuid == ^uuid and c.status == "active" and
+              fragment("?->>'source' = 'telegram'", c.metadata),
+          order_by: [
+            desc: fragment("coalesce(?, ?)", c.last_message_at, c.inserted_at),
+            desc: c.uuid
+          ],
+          limit: 1
+        )
+        |> repo().one()
+
+      :error ->
+        nil
+    end
+  end
+
+  @doc false
+  # How a turn of `turn_ref` in the chat ended, for the bridge: `{:notice,
+  # code}` when the turn stored a notice with an error code (a deadline, a
+  # model error, a lost session…: it outranks any text the turn said before),
+  # `{:needs_confirmation, text, card}` when the turn ended with a change held
+  # for the user's confirmation (`text`: the last text the assistant said in
+  # the turn, or `nil`; `card`: the card message, with its `uuid`,
+  # `confirmation_uuid`, `tool_name` and `assistant_message_uuid`), else
+  # `{:answer, text}`, the turn's last assistant message with a text and no
+  # tool calls; `:none` when it has none of these (yet). The notice with an
+  # error code that follows a held change is `turn_error/2`. Notices of a
+  # confirmation carry no error code and do not count.
+  @spec turn_result(term(), term()) ::
+          {:answer, String.t()}
+          | {:notice, String.t()}
+          | {:needs_confirmation, String.t() | nil, Message.t()}
+          | :none
+  def turn_result(conversation_uuid, turn_ref) when is_binary(turn_ref) do
+    case Ecto.UUID.cast(conversation_uuid) do
+      {:ok, uuid} ->
+        messages = turn_messages(uuid, turn_ref)
+
+        case card_of_turn(messages) do
+          nil -> result_of_turn(messages)
+          card -> {:needs_confirmation, last_text(messages), card}
+        end
+
+      :error ->
+        :none
+    end
+  end
+
+  def turn_result(_conversation_uuid, _turn_ref), do: :none
+
+  @doc false
+  # The error code of the notice that ended the turn, or `nil`: what the
+  # bridge says after the card of a held change when the turn failed past it.
+  @spec turn_error(term(), term()) :: String.t() | nil
+  def turn_error(conversation_uuid, turn_ref) when is_binary(turn_ref) do
+    with {:ok, uuid} <- Ecto.UUID.cast(conversation_uuid),
+         %Message{error: code} <- uuid |> turn_messages(turn_ref) |> error_notice() do
+      code
+    else
+      _none -> nil
+    end
+  end
+
+  def turn_error(_conversation_uuid, _turn_ref), do: nil
+
+  defp turn_messages(conversation_uuid, turn_ref) do
+    repo().all(
+      from(m in Message,
+        where:
+          m.conversation_uuid == ^conversation_uuid and m.turn_ref == ^turn_ref and
+            m.role in ["assistant", "notice", "tool"],
+        order_by: [asc: m.inserted_at, asc: m.uuid],
+        select:
+          struct(m, [
+            :uuid,
+            :conversation_uuid,
+            :role,
+            :content,
+            :error,
+            :tool_calls,
+            :tool_name,
+            :tool_outcome,
+            :confirmation_uuid,
+            :assistant_message_uuid
+          ])
+      )
+    )
+  end
+
+  defp card_of_turn(messages) do
+    messages
+    |> Enum.filter(
+      &(&1.role == "tool" and &1.tool_outcome == "needs_confirmation" and
+          not is_nil(&1.confirmation_uuid))
+    )
+    |> List.last()
+  end
+
+  defp last_text(messages) do
+    case messages
+         |> Enum.filter(&(&1.role == "assistant" and present?(&1.content)))
+         |> List.last() do
+      %Message{content: text} -> text
+      nil -> nil
+    end
+  end
+
+  defp error_notice(messages),
+    do: messages |> Enum.filter(&(&1.role == "notice" and present?(&1.error))) |> List.last()
+
+  @doc false
+  # Whether the turn asked for a write tool and was refused ("denied"): for a
+  # Telegram chat, which is offered no write, a request to change something.
+  # A refused read tool, or a name the model made up, is not one.
+  @spec turn_denied?(term(), term()) :: boolean()
+  def turn_denied?(conversation_uuid, turn_ref) when is_binary(turn_ref) do
+    case Ecto.UUID.cast(conversation_uuid) do
+      {:ok, uuid} ->
+        from(m in Message,
+          where:
+            m.conversation_uuid == ^uuid and m.turn_ref == ^turn_ref and m.role == "tool" and
+              m.tool_outcome == "denied",
+          select: m.tool_name
+        )
+        |> repo().all()
+        |> Enum.any?(&write_tool?/1)
+
+      :error ->
+        false
+    end
+  end
+
+  def turn_denied?(_conversation_uuid, _turn_ref), do: false
+
+  defp write_tool?(name) do
+    case Registry.find(name, :admin) do
+      {:ok, tool} -> ControlFields.write_tool?(tool)
+      _unknown -> false
+    end
+  end
+
+  defp result_of_turn(messages) do
+    notice = error_notice(messages)
+
+    answer =
+      messages
+      |> Enum.filter(&(&1.role == "assistant" and no_calls?(&1) and present?(&1.content)))
+      |> List.last()
+
+    case {notice, answer} do
+      {%Message{error: code}, _answer} -> {:notice, code}
+      {nil, %Message{content: text}} -> {:answer, text}
+      {nil, nil} -> :none
+    end
+  end
+
+  defp no_calls?(%Message{tool_calls: calls}), do: calls in [nil, []]
+
+  defp present?(text) when is_binary(text), do: String.trim(text) != ""
+  defp present?(_none), do: false
+
+  @doc false
+  # Which kind of actor a reference is, for the prompt of a turn
+  # (`PhoenixKitAgent.Prompt`) and the tools it may use.
+  @spec channel(session_ref()) :: :telegram | :site
+  def channel({:telegram_link, _user_uuid, _connection_uuid, _chat_id}), do: :telegram
+  def channel(_session_ref), do: :site
 
   @doc """
   The user's active chats, newest `last_message_at` first, one page at a time.
@@ -234,15 +487,17 @@ defmodule PhoenixKitAgent.Conversations do
   @spec rename_conversation(session_ref(), term(), term(), keyword()) ::
           {:ok, Conversation.t()} | {:error, refusal() | Ecto.Changeset.t()}
   def rename_conversation(session_ref, conversation_uuid, title, opts) do
-    with_owned(session_ref, conversation_uuid, opts, fn conversation ->
-      changeset =
-        conversation
-        |> Conversation.changeset(%{title: trim(title)})
-        |> Ecto.Changeset.validate_required([:title])
+    on_the_site(session_ref, fn ->
+      with_owned(session_ref, conversation_uuid, opts, fn conversation ->
+        changeset =
+          conversation
+          |> Conversation.changeset(%{title: trim(title)})
+          |> Ecto.Changeset.validate_required([:title])
 
-      if changeset.valid?,
-        do: update_owned(conversation, title: Ecto.Changeset.get_field(changeset, :title)),
-        else: {:error, %{changeset | action: :update}}
+        if changeset.valid?,
+          do: update_owned(conversation, title: Ecto.Changeset.get_field(changeset, :title)),
+          else: {:error, %{changeset | action: :update}}
+      end)
     end)
   end
 
@@ -276,16 +531,18 @@ defmodule PhoenixKitAgent.Conversations do
   def add_message(session_ref, conversation_uuid, attrs, opts) when is_map(attrs) do
     content = Map.get(attrs, :content, Map.get(attrs, "content"))
 
-    with_user(session_ref, opts, fn user_uuid ->
-      store(
-        user_uuid,
-        conversation_uuid,
-        &(&1
-          |> Message.user_changeset(%{content: content})
-          |> Ecto.Changeset.validate_length(:content, max: Config.history_chars())),
-        [],
-        []
-      )
+    on_the_site(session_ref, fn ->
+      with_user(session_ref, opts, fn user_uuid ->
+        store(
+          user_uuid,
+          conversation_uuid,
+          &(&1
+            |> Message.user_changeset(%{content: content})
+            |> Ecto.Changeset.validate_length(:content, max: Config.history_chars())),
+          [],
+          []
+        )
+      end)
     end)
   end
 
@@ -362,12 +619,112 @@ defmodule PhoenixKitAgent.Conversations do
     result
   end
 
+  # Once a message is committed: the event, and, for the notice of a card in a
+  # chat from Telegram, the edit of the card there
+  # (`PhoenixKitAgent.Telegram.Cards.notice_added/1`, in a task of its own).
   defp announce(%Message{} = message) do
     PubSub.broadcast(
       topic(message.conversation_uuid),
       {:agent_message_added, message.conversation_uuid, message.uuid}
     )
+
+    if message.role == "notice" and not is_nil(message.confirmation_uuid),
+      do: Cards.notice_added(message)
+
+    :ok
   end
+
+  @cards_kept 50
+
+  @doc false
+  # Where the card of the confirmation `confirmation_uuid` stands in Telegram,
+  # kept in the chat's metadata (`"telegram_cards"`, no table of its own): the
+  # bot, the chat and the message the card was sent as. The write is one
+  # statement on the chat's row held `FOR UPDATE`, so two cards stored at once
+  # do not lose one another; only the newest #{@cards_kept} are kept. With
+  # `keep: true` a link that is there already is left as it is (the press of a
+  # button fills it only when the send did not).
+  @spec put_telegram_card(term(), term(), String.t(), integer(), integer(), keyword()) ::
+          :ok | {:error, :not_found}
+  def put_telegram_card(
+        conversation_uuid,
+        confirmation_uuid,
+        connection_uuid,
+        chat_id,
+        message_id,
+        opts \\ []
+      )
+      when is_binary(connection_uuid) and is_integer(chat_id) and is_integer(message_id) do
+    with {:ok, conversation_uuid} <- Ecto.UUID.cast(conversation_uuid),
+         {:ok, confirmation_uuid} <- Ecto.UUID.cast(confirmation_uuid) do
+      entry = %{
+        "connection_uuid" => connection_uuid,
+        "chat_id" => chat_id,
+        "message_id" => message_id,
+        "at" => System.system_time(:millisecond)
+      }
+
+      case repo().transaction(fn ->
+             lock_and_store(conversation_uuid, confirmation_uuid, entry, opts)
+           end) do
+        {:ok, :ok} -> :ok
+        {:error, :not_found} -> {:error, :not_found}
+      end
+    else
+      :error -> {:error, :not_found}
+    end
+  end
+
+  defp lock_and_store(conversation_uuid, confirmation_uuid, entry, opts) do
+    case repo().one(
+           from(c in Conversation, where: c.uuid == ^conversation_uuid, lock: "FOR UPDATE")
+         ) do
+      %Conversation{metadata: metadata} = conversation ->
+        cards = if is_map(metadata["telegram_cards"]), do: metadata["telegram_cards"], else: %{}
+
+        if opts[:keep] && is_map(cards[confirmation_uuid]),
+          do: :ok,
+          else: store_card(conversation, cards, confirmation_uuid, entry)
+
+      nil ->
+        repo().rollback(:not_found)
+    end
+  end
+
+  defp store_card(conversation, cards, confirmation_uuid, entry) do
+    kept =
+      cards
+      |> Map.put(confirmation_uuid, entry)
+      |> Enum.sort_by(fn {_uuid, card} -> card["at"] || 0 end, :desc)
+      |> Enum.take(@cards_kept)
+      |> Map.new()
+
+    repo().update_all(
+      from(c in Conversation, where: c.uuid == ^conversation.uuid),
+      set: [metadata: Map.put(conversation.metadata, "telegram_cards", kept)]
+    )
+
+    :ok
+  end
+
+  @doc false
+  # The place of the card in Telegram that `put_telegram_card/6` kept:
+  # `{connection_uuid, chat_id, message_id}`, or `nil`.
+  @spec telegram_card(Conversation.t() | map(), term()) ::
+          {String.t(), integer(), integer()} | nil
+  def telegram_card(%{metadata: %{"telegram_cards" => cards}}, confirmation_uuid)
+      when is_map(cards) and is_binary(confirmation_uuid) do
+    case cards[confirmation_uuid] do
+      %{"connection_uuid" => connection, "chat_id" => chat_id, "message_id" => message_id}
+      when is_binary(connection) and is_integer(chat_id) and is_integer(message_id) ->
+        {connection, chat_id, message_id}
+
+      _none ->
+        nil
+    end
+  end
+
+  def telegram_card(_conversation, _confirmation_uuid), do: nil
 
   defp link_attachments([], _conversation, _message), do: :ok
 
@@ -480,6 +837,28 @@ defmodule PhoenixKitAgent.Conversations do
   defp scope_for({session_token_uuid, user_uuid}),
     do: SessionRef.scope_for_session(session_token_uuid, user_uuid)
 
+  # A linked chat: its link and the account gate as of now, and the right to
+  # the assistant in Telegram (`agent.telegram`, with `agent` checked after).
+  defp scope_for({:telegram_link, user_uuid, connection_uuid, chat_id}) do
+    with %User{uuid: ^user_uuid} = user <- Linking.linked_user(connection_uuid, chat_id),
+         {:ok, scope} <- SessionRef.scope_for_user(user, narrow: true),
+         true <- Scope.can?(scope, "agent.telegram") do
+      {:ok, scope}
+    else
+      false ->
+        {:error, :forbidden}
+
+      {:error, refused} when refused in [:service_user, :managed_organization] ->
+        {:error, :session_gone}
+
+      {:error, _gate} = refused ->
+        refused
+
+      _not_linked ->
+        {:error, :session_gone}
+    end
+  end
+
   defp scope_for(_not_a_reference), do: {:error, :session_gone}
 
   defp authorize(scope, user_uuid) do
@@ -511,10 +890,24 @@ defmodule PhoenixKitAgent.Conversations do
   # ── helpers ─────────────────────────────────────────────────────
 
   defp set_status(session_ref, conversation_uuid, status, opts) do
-    with_owned(session_ref, conversation_uuid, opts, fn conversation ->
-      update_owned(conversation, status: status)
+    on_the_site(session_ref, fn ->
+      with_owned(session_ref, conversation_uuid, opts, fn conversation ->
+        update_owned(conversation, status: status)
+      end)
     end)
   end
+
+  @doc false
+  # The writers a person's client uses (create, rename, archive, delete, add a
+  # message, the personal instructions) are for a site session only: a linked
+  # Telegram chat reads and asks, and the bridge makes its chats with
+  # `create_conversation_for/2` and its turns with `PhoenixKitAgent.Turns`.
+  @spec on_the_site(session_ref(), (-> result)) :: result | {:error, :not_in_telegram}
+        when result: term()
+  def on_the_site({:telegram_link, _user, _connection, _chat}, _fun),
+    do: {:error, :not_in_telegram}
+
+  def on_the_site(_session_ref, fun), do: fun.()
 
   # One statement that changes the chat only while it is the owner's and not
   # deleted: a chat deleted after `with_owned/4` read it stays deleted.

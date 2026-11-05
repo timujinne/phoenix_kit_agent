@@ -24,6 +24,8 @@ defmodule PhoenixKitAgent.UserConfig do
       revoked one, a user without `agent` or one switched off is refused. The
       write replaces that one column, so nothing an admin set can change
       through it.
+      A linked Telegram chat may read its instructions but not write them
+      (`{:error, :not_in_telegram}`): they go into every later prompt.
     * An admin — `admin_update/4`, with the scope of a person who holds
       `agent.manage` (checked again here, so a caller that forgets is refused).
       It writes the switch, the model, the admin's prompt, the limits and the
@@ -221,19 +223,21 @@ defmodule PhoenixKitAgent.UserConfig do
   @spec put_personal_instructions(Conversations.session_ref(), term(), keyword()) ::
           {:ok, String.t() | nil} | {:error, Conversations.refusal() | Ecto.Changeset.t()}
   def put_personal_instructions(session_ref, text, opts) do
-    with {:ok, user_uuid} <- Conversations.authorize_session(session_ref, opts) do
-      changeset =
-        UserSettings.personal_changeset(%UserSettings{user_uuid: user_uuid}, %{
-          personal_instructions: text
-        })
+    Conversations.on_the_site(session_ref, fn ->
+      with {:ok, user_uuid} <- Conversations.authorize_session(session_ref, opts) do
+        changeset =
+          UserSettings.personal_changeset(%UserSettings{user_uuid: user_uuid}, %{
+            personal_instructions: text
+          })
 
-      if changeset.valid? do
-        stored = Ecto.Changeset.get_field(changeset, :personal_instructions)
-        write_personal(user_uuid, stored)
-      else
-        {:error, %{changeset | action: :update}}
+        if changeset.valid? do
+          stored = Ecto.Changeset.get_field(changeset, :personal_instructions)
+          write_personal(user_uuid, stored)
+        else
+          {:error, %{changeset | action: :update}}
+        end
       end
-    end
+    end)
   end
 
   # An upsert of the one column (and `updated_at`): a row an admin filled in,

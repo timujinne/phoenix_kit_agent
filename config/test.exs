@@ -8,6 +8,18 @@ config :phoenix_kit_agent, ecto_repos: [PhoenixKitAgent.Test.Repo]
 # this; the tests of the grace period itself set a longer one.
 config :phoenix_kit_agent, turn_stop_grace_ms: 200
 
+# The Telegram reader does not look at the bot by itself in tests; they call
+# `Reader.cycle/2`. The pauses between a long answer's parts and before a
+# retry are short.
+config :phoenix_kit_agent,
+  telegram_reader_autostart: false,
+  # Off unless a test turns it on: the core at hand may or may not let a chat hold
+  # writes (`PhoenixKitAgent.Config.writes?/0`).
+  telegram_link_writes: false,
+  telegram_part_pause_ms: 0,
+  telegram_quick_reply_ms: 0,
+  telegram_max_retry_ms: 50
+
 # `PGDATABASE` lets this suite point at a database the test role isn't
 # allowed to CREATE (e.g. a shared instance) instead of the name Hex CI
 # provisions for itself. Same mechanism as core phoenix_kit's

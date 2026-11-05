@@ -271,6 +271,116 @@ and `Web.Markdown`).
   a new choice; the lift of a block goes through `Web.Access` and then
   `Guard.unblock/3` with the session's scope (the guard decides own and
   Owner blocks).
+- **A linked Telegram chat** is the second kind of actor reference,
+  `{:telegram_link, user_uuid, connection_uuid, chat_id}` (core's
+  `Linking.actor_ref/2`, built from an update read at the bot, never from a
+  text). `Conversations` checks it on every call instead of the session: the
+  link now (`Linking.linked_user/2`; gone is `:session_gone`), the session's
+  account gate (`SessionRef.scope_for_user/2`, the default role) and the
+  sub-permission `agent.telegram` (declared `opt_in: true`; `:forbidden`
+  without it). What a chat may do depends on the core: where it has
+  `PhoenixKit.API.Executor.link_writes?/0` — asked in **one place only**,
+  `Config.writes?/0` (it feature-detects, since the core requirement of the
+  module is below the first release with it; `config :phoenix_kit_agent,
+  :telegram_link_writes` stands in for it in tests, and `:api_modules`
+  (`executor:`, `confirm:`) for the core's modules, see
+  `test/support/fake_core.ex`) — a chat proposes changes as the site does
+  (below) and everything that follows (`Turns.Runner`'s `allow: :all, via:
+  "telegram"`, the prompt rule, the help text, the button presses of the
+  bridge, `allowed_updates` of the reader, `settle_lapsed_in_turn`, the edits of
+  the cards) follows that one answer; without it a chat reads only (no `allow:
+  :all`, no `via:`, core's own "telegram"). `Prompt` gets `channel: :telegram`
+  (plain text, absolute links, and the chat's rule on changes instead of the
+  site's write rule). `Attachments` refuses a chat with `:not_in_telegram`,
+  and so does `Confirmations` for everything but the presses below.
+  Limits, locks and the user's
+  own model, instructions and spending are the user's, as for the panel. The
+  trusted entry points of a bridge, which take no session and are never for a
+  client's event: `Conversations.create_conversation_for/2`,
+  `latest_telegram_conversation/1`, `turn_result/2` (a notice with an error
+  code of the turn outranks any text it said; a turn that ended with a change
+  held is `{:needs_confirmation, text, card}`, and `turn_error/2` is the error
+  that followed the hold), `turn_denied?/2` (the turn asked for a write tool
+  and was refused), `put_telegram_card/6` and `telegram_card/2` (where a card
+  was sent). The panel marks a chat whose
+  `metadata.source` is `"telegram"`.
+- **The Telegram reader and bridge** (`PhoenixKitAgent.Telegram.*`, started
+  by `children/0`; off by default, the switch is `agent_telegram_enabled` on
+  Settings → AI Agent, `agent.manage`). `Reader` is the one reader of the site
+  bot (`getUpdates`); the host declares `config :phoenix_kit,
+  :telegram_updates_reader, {PhoenixKitAgent.Telegram.Reader, :holds?, []}`.
+  `holds?/1` is only `:global.whereis_name/1` (it never calls the process, which
+  may be in a long poll), and the name is registered only while the reader
+  really polls (switch on, a bot, no webhook). A reader that lost the name
+  (`{:global_name_conflict, name}` after a netsplit, or a check before each
+  poll) stops reading and is `standby`. The offset
+  (`agent_telegram_offset`, `"<connection uuid>:<update id>"`, written with
+  `history: false`) is stored **before** the batch goes on — also from the
+  `confirm:` of `Linking.handle_updates/3` — so an update is answered at most
+  once; `:busy` leaves it alone and the batch is read again in 2 s. A 409
+  "Conflict" pauses 60 s (status, one warning per 10 minutes); other errors
+  back off 5 → 60 s. `Bridge.handle_update/3` decides (it reads the link and remembers an unlinked
+  chat in the limiter's table, sends nothing):
+  only a private text message of a chat `Linking.chat_for_update/1` knows, not
+  older than 10 minutes; `/start <anything>` never reaches the agent (core's),
+  bare `/start` and `/help` get the help text, `/new` a new conversation,
+  forwarded messages and anything but text a fixed refusal; an edited message
+  or a group is ignored. `Bridge.dispatch/3` runs it: a per-chat serial queue
+  (`ChatQueue`: a process per `{bot, chat}`, at most 3 waiting, 20 queues in
+  all, overflow texts "wait" / "busy") and the turns in
+  `PhoenixKitAgent.Telegram.TaskSupervisor`; the replies that need no turn run
+  under their own `ReplySupervisor` and come to a linked chat once in 3 s at
+  most for each kind (`Limiter.allow_quick_reply?/3`: a refusal is still told
+  right after a help). A queue that cannot start a turn (the
+  supervisor is full) answers "busy" and stays. A turn (`Telegram.Turn`)
+  subscribes to `agent:conv:<uuid>` **before** `Turns.start/6`, shows 👀, sends
+  `typing` every 4 s, then `Conversations.turn_result/2` becomes the answer
+  (markdown cleaned to plain text by `Format`, addresses left whole, cut to
+  4096 UTF-16 units, one message a second, one retry on a 429) with 👍 — only
+  when it was sent and no write tool of the turn was denied (a request to change
+  something, `Conversations.turn_denied?/2`; a made-up or refused read tool is
+  not one) — or a notice / refusal in the
+  user's language (`Telegram.Texts`, `RecipientLocale`) with 🤷. A chat nobody
+  linked is remembered for 60 s (`Limiter`) and told once per 10 minutes,
+  20 such replies a minute per bot. Nothing of an update's text or the bot's
+  token lives in a process state (the reader and the queues are
+  `:sensitive` and their `format_status` hides the state, the message and the
+  arguments of a failure; a job holds its text only while it runs, in a task
+  that catches its own exceptions) or in a log: a failure logs its
+  class and the `update_id`. In the test env the reader does not poll by itself
+  (`telegram_reader_autostart: false`); `Reader.cycle/2` is one look and one
+  poll, and `PhoenixKitAgent.Test.TelegramClient` plays the bot.
+- **Changes from Telegram** (`Telegram.Card`, `Cards`, `Press`; only where
+  `Config.writes?/0`). The turn ends at the hold as on the site (one waiting
+  write, no model call after it), and `Telegram.Turn` sends what the assistant
+  said, then **the card**: plain text of core's preview
+  (`Approvals.View.preview/1`; a `technical` remainder is cut at 1500
+  characters and then only ❌ is offered) read with the chat's own reference
+  (`Confirm.get_for_user/2`) and the buttons ✅ / ❌ whose data is `c:` / `x:`
+  and the confirmation's uuid and nothing else. A card that could not be sent
+  is one message that sends the person to the site, and 🤷. Where it went is
+  kept in `conversation.metadata["telegram_cards"]` (bot, chat, message; the
+  newest 50; one row-locked write, `Conversations.put_telegram_card/6`).
+  The row is the chat's (core binds it by `context`); a row of the site is
+  `:foreign` / `other_origin` to the chat, and the chat never settles or doubles
+  it (`waiting_same?/3` reads it with `lookup_for_user/2`). A press
+  (`Bridge` → `Press`, a task of the `ReplySupervisor`, never the chat's queue):
+  10 a minute per chat, a private chat, linked, strict data, then
+  `Confirmations.precheck/2` (the card by its confirmation, in a conversation
+  of this user and this chat, however old; its notice; the row's status) — a
+  refusal is a toast and, for a card that is gone, ran out or was handled, an
+  edit without buttons; otherwise the message is remembered, an **empty**
+  `answerCallbackQuery` goes out, then `Confirmations.confirm_press/3` /
+  `reject_press/3` (the site's click under the user's lock, `via:
+  "telegram"`). A press that did not go through and left the buttons is a line
+  under the card (re-read right before the edit). The outcome itself is shown
+  by `Cards.notice_added/1` only, called from `Conversations` once a `notice`
+  with a `confirmation_uuid` is committed in a Telegram conversation — also
+  when the site wrote it — in a task, for the bot the card was sent by, with
+  the switch on: the edit to the outcome, and for `changed` the new card. A
+  card that runs out untouched keeps its buttons until pressed. Without
+  `agent.telegram` neither ✅ nor ❌ works; without the right to the tool ✅
+  is refused and ❌ works.
 - **Boundaries:** nothing about orders, customers or other host domain data
   lives here — the module only knows "tools from the registry". Model calls,
   budget and the request journal stay in `phoenix_kit_ai`.

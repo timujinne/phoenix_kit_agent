@@ -295,6 +295,13 @@ defmodule PhoenixKitAgent.Web.Dock.Panel do
                   class="flex-1 min-w-0 text-left"
                 >
                   <span class="block truncate">{chat_title(chat)}</span>
+                  <span
+                    :if={from_telegram?(chat)}
+                    id={"pk-agent-chat-source-#{chat.uuid}"}
+                    class="badge badge-info badge-xs"
+                  >
+                    {gettext("Telegram")}
+                  </span>
                   <.chat_time id={"pk-agent-chat-time-#{chat.uuid}"} datetime={chat.last_message_at} />
                 </button>
                 <button
@@ -716,6 +723,9 @@ defmodule PhoenixKitAgent.Web.Dock.Panel do
 
   defp chat_title(%{title: title}) when is_binary(title) and title != "", do: title
   defp chat_title(_conversation), do: gettext("New chat")
+
+  defp from_telegram?(%{metadata: %{"source" => "telegram"}}), do: true
+  defp from_telegram?(_conversation), do: false
 
   defp activity_text(:stopping), do: gettext("Stopping…")
 

@@ -6,6 +6,7 @@ defmodule PhoenixKitAgent.Fixtures do
 
   import Ecto.Query, only: [from: 2]
 
+  alias PhoenixKit.Integrations.Telegram.Linking
   alias PhoenixKit.Users.Auth
   alias PhoenixKit.Users.Auth.Scope
   alias PhoenixKit.Users.Auth.SessionRef
@@ -117,5 +118,19 @@ defmodule PhoenixKitAgent.Fixtures do
     %Conversation{user_uuid: user.uuid}
     |> Conversation.changeset(Map.merge(%{title: "Chat"}, Map.new(attrs)))
     |> Repo.insert!()
+  end
+
+  @doc """
+  Links `user`'s Telegram chat `chat_id` to the bot `connection` (as the
+  linking flow of core stores it), with the user's email confirmed; returns
+  the actor reference of core, `{:telegram_link, user_uuid, connection, chat_id}`.
+  """
+  def telegram_link_fixture(user, connection, chat_id) do
+    Repo.update_all(from(u in Auth.User, where: u.uuid == ^user.uuid),
+      set: [confirmed_at: DateTime.utc_now()]
+    )
+
+    {:ok, _} = Linking.link_chat(user, connection, chat_id)
+    {:telegram_link, user.uuid, connection, chat_id}
   end
 end

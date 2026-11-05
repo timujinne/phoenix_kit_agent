@@ -12,6 +12,59 @@ defmodule PhoenixKitAgent.ConfigTest do
   alias PhoenixKitAgent.Config
   alias PhoenixKitAgent.Test.LogProbe
 
+  describe "writes?/0, the one question about the core" do
+    defmodule WithWrites do
+      def link_writes?, do: true
+    end
+
+    defmodule WithoutWrites do
+    end
+
+    defmodule WritesOff do
+      def link_writes?, do: false
+    end
+
+    setup do
+      forced = Application.get_env(:phoenix_kit_agent, :telegram_link_writes)
+      Application.delete_env(:phoenix_kit_agent, :telegram_link_writes)
+
+      on_exit(fn ->
+        Application.put_env(:phoenix_kit_agent, :telegram_link_writes, forced)
+        Application.delete_env(:phoenix_kit_agent, :api_modules)
+      end)
+    end
+
+    test "true when the core says its chats may hold writes" do
+      Application.put_env(:phoenix_kit_agent, :api_modules, executor: WithWrites)
+      assert Config.writes?()
+    end
+
+    test "false for a core without the function, and for one that says no" do
+      Application.put_env(:phoenix_kit_agent, :api_modules, executor: WithoutWrites)
+      refute Config.writes?()
+
+      Application.put_env(:phoenix_kit_agent, :api_modules, executor: WritesOff)
+      refute Config.writes?()
+    end
+
+    test "the setting stands in for the core's answer, either way" do
+      Application.put_env(:phoenix_kit_agent, :api_modules, executor: WithoutWrites)
+      Application.put_env(:phoenix_kit_agent, :telegram_link_writes, true)
+      assert Config.writes?()
+
+      Application.put_env(:phoenix_kit_agent, :api_modules, executor: WithWrites)
+      Application.put_env(:phoenix_kit_agent, :telegram_link_writes, false)
+      refute Config.writes?()
+    end
+
+    test "without any setting it is core's own answer" do
+      executor = PhoenixKit.API.Executor
+
+      assert Config.writes?() ==
+               (function_exported?(executor, :link_writes?, 0) and executor.link_writes?())
+    end
+  end
+
   describe "defaults" do
     test "the limits are $1 a day, $10 a month, 200 turns, 20 MB files, 5 per message" do
       assert Config.limit_defaults() == %{
