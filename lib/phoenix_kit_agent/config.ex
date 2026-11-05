@@ -21,6 +21,8 @@ defmodule PhoenixKitAgent.Config do
   | `agent_history_chars` | `24_000` |
   | `agent_tool_result_chars` | `12_000` |
   | `agent_capture_ai_content` | `false` |
+  | `agent_telegram_enabled` | `false` — answer the linked chats of the site's Telegram bot |
+  | `agent_telegram_offset` | none — `"<bot connection uuid>:<last update id>"`, kept by the reader |
 
   Money is in micro-dollars ($1 = 1_000_000); the AI journal keeps dollars
   (`phoenix_kit_ai_requests.cost`), read through `cost_to_micro/1`. A stored
@@ -60,6 +62,7 @@ defmodule PhoenixKitAgent.Config do
   alias PhoenixKitAI.Endpoint
 
   @module "agent"
+  @telegram_offset_key "agent_telegram_offset"
   @micro_per_usd 1_000_000
 
   # {field, setting key, default, min, max}
@@ -150,7 +153,55 @@ defmodule PhoenixKitAgent.Config do
     string_setting("agent_capture_ai_content") == "true"
   end
 
+  @doc """
+  Whether the assistant answers the linked chats of the site's Telegram bot
+  (`agent_telegram_enabled`; on only when it reads exactly `"true"`).
+  """
+  @spec telegram_enabled?() :: boolean()
+  def telegram_enabled?, do: string_setting("agent_telegram_enabled") == "true"
+
+  @doc """
+  The last update id the Telegram reader took from the bot `connection_uuid`,
+  or `nil` (none, or kept for another bot). Read from the database, not the
+  cache: a node that takes the bot over must see the last node's write.
+  """
+  @spec telegram_offset(String.t()) :: integer() | nil
+  def telegram_offset(connection_uuid) when is_binary(connection_uuid) do
+    with %{@telegram_offset_key => stored} when is_binary(stored) <-
+           Settings.get_settings_direct([@telegram_offset_key]),
+         [^connection_uuid, id] <- String.split(stored, ":", parts: 2),
+         {offset, ""} <- Integer.parse(id) do
+      offset
+    else
+      _none_or_another_bot -> nil
+    end
+  end
+
   # ── Writers ───────────────────────────────────────────────────────────
+
+  @doc """
+  Switches `agent_telegram_enabled`. `opts` go to `PhoenixKit.Settings`
+  (`actor_uuid:`, `source:`). The caller checks `agent.manage`.
+  """
+  @spec put_telegram_enabled(boolean(), keyword()) ::
+          {:ok, term()} | {:error, Ecto.Changeset.t()}
+  def put_telegram_enabled(value, opts) when is_boolean(value) do
+    Settings.update_boolean_setting_with_module("agent_telegram_enabled", value, @module, opts)
+  end
+
+  @doc false
+  # The reader's own write, once per batch: without the settings history,
+  # which would fill the Activity log with it.
+  @spec put_telegram_offset(String.t(), integer()) :: {:ok, term()} | {:error, term()}
+  def put_telegram_offset(connection_uuid, update_id)
+      when is_binary(connection_uuid) and is_integer(update_id) do
+    Settings.update_setting_with_module(
+      @telegram_offset_key,
+      "#{connection_uuid}:#{update_id}",
+      @module,
+      history: false
+    )
+  end
 
   @doc """
   Sets the module's system prompt (`agent_system_prompt`); a blank one means

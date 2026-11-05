@@ -41,9 +41,11 @@ defmodule PhoenixKitAgent.TranslationsTest do
 
   # Texts that read the same in a language: a unit, a name.
   @same %{
-    "et" => ["MB", "s"],
-    "de" => ["MB", "s", "Limits"],
-    "fr" => ["s", "Message", "Assistant"]
+    "et" => ["MB", "s", "Telegram"],
+    "ru" => ["Telegram"],
+    "uk" => ["Telegram"],
+    "de" => ["MB", "s", "Limits", "Telegram", "Agent in Telegram", "Status"],
+    "fr" => ["s", "Message", "Assistant", "Telegram"]
   }
 
   test "the template has messages" do

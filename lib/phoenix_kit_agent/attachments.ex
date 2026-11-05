@@ -81,6 +81,8 @@ defmodule PhoenixKitAgent.Attachments do
   `:empty_file`, `:too_large`, `:unsupported_type`, `:unsupported_encoding` (a
   text, CSV or Markdown file that is not UTF-8: save it as UTF-8),
   `:no_vision_model`, `:too_many`, `:storage_unavailable`, `:already_sent`.
+  A linked Telegram chat (the `{:telegram_link, …}` reference) attaches nothing:
+  every function here is `{:error, :not_in_telegram}` for it.
 
   A row that is still `pending` after the processing deadline and a margin (the
   node was restarted, the task was lost) is settled as `failed`/`timeout` the
@@ -142,6 +144,9 @@ defmodule PhoenixKitAgent.Attachments do
   """
   @spec add(Conversations.session_ref(), term(), upload(), keyword()) ::
           {:ok, Attachment.t()} | {:error, refusal()}
+  def add({:telegram_link, _user, _connection, _chat}, _, _, _),
+    do: {:error, :not_in_telegram}
+
   def add(session_ref, conversation_uuid, upload, opts) do
     with {:ok, conversation} <-
            Conversations.owned_conversation(session_ref, conversation_uuid, opts),
@@ -408,6 +413,9 @@ defmodule PhoenixKitAgent.Attachments do
   @doc "The session user's attachment `attachment_uuid`."
   @spec get(Conversations.session_ref(), term(), keyword()) ::
           {:ok, Attachment.t()} | {:error, refusal()}
+  def get({:telegram_link, _user, _connection, _chat}, _, _),
+    do: {:error, :not_in_telegram}
+
   def get(session_ref, attachment_uuid, opts) do
     with {:ok, user_uuid} <- Conversations.authorize_session(session_ref, opts),
          :ok <- settle_stale(user_uuid) do
@@ -457,6 +465,9 @@ defmodule PhoenixKitAgent.Attachments do
   """
   @spec list_unsent(Conversations.session_ref(), term(), keyword()) ::
           {:ok, [Attachment.t()]} | {:error, refusal()}
+  def list_unsent({:telegram_link, _user, _connection, _chat}, _, _),
+    do: {:error, :not_in_telegram}
+
   def list_unsent(session_ref, conversation_uuid, opts) do
     with {:ok, conversation} <-
            Conversations.owned_conversation(session_ref, conversation_uuid, opts),
@@ -477,6 +488,9 @@ defmodule PhoenixKitAgent.Attachments do
   that is part of a message is `{:error, :already_sent}`.
   """
   @spec discard(Conversations.session_ref(), term(), keyword()) :: :ok | {:error, refusal()}
+  def discard({:telegram_link, _user, _connection, _chat}, _, _),
+    do: {:error, :not_in_telegram}
+
   def discard(session_ref, attachment_uuid, opts) do
     with {:ok, user_uuid} <- Conversations.authorize_session(session_ref, opts),
          {:ok, attachment} <- fetch(user_uuid, attachment_uuid) do
@@ -504,6 +518,9 @@ defmodule PhoenixKitAgent.Attachments do
   """
   @spec url(Conversations.session_ref(), term(), keyword()) ::
           {:ok, String.t()} | {:error, refusal()}
+  def url({:telegram_link, _user, _connection, _chat}, _, _),
+    do: {:error, :not_in_telegram}
+
   def url(session_ref, attachment_uuid, opts) do
     variant = if is_binary(opts[:variant]), do: opts[:variant], else: "original"
 

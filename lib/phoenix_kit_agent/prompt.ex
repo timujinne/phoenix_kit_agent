@@ -15,7 +15,11 @@ defmodule PhoenixKitAgent.Prompt do
        marker `⟦off_purpose: <reason>⟧` at the very end of the answer, which
        the turn cuts off (`PhoenixKitAgent.Turns.Runner`). It stands above
        everything the admin and the user write, so their instructions cannot
-       undo it, and above the date, so the prompt's cached prefix holds;
+       undo it, and above the date, so the prompt's cached prefix holds. For a
+       turn in a linked Telegram chat (`channel: :telegram`) the write rule is
+       replaced by the channel's: the chat reads only, so the model answers
+       in plain text, briefly, with whole links, and sends changes to the site
+       instead of promising a confirmation in the chat;
     2. the host's addendum — `config :phoenix_kit_agent, prompt_addendum:
        {Mod, :fun}`: what an order is, the statuses, the language of the
        answer. `Mod.fun(ctx)` is called with `%{user_uuid:, locale:}` when it
@@ -65,6 +69,7 @@ defmodule PhoenixKitAgent.Prompt do
 
   alias PhoenixKit.Settings
   alias PhoenixKit.Users.Auth.Scope
+  alias PhoenixKit.Utils.Routes
   alias PhoenixKit.Utils.TimeZone
   alias PhoenixKitAgent.{Config, UserConfig}
 
@@ -86,6 +91,24 @@ defmodule PhoenixKitAgent.Prompt do
                 "\n"
               )
 
+  # The rule of a linked Telegram chat, in place of `@write_rule`: the chat only
+  # reads (no tool that changes data is there), and what it sends is plain text.
+  defp telegram_rule do
+    Enum.join(
+      [
+        "This conversation is in Telegram. Answer in plain text, briefly: no markdown, " <>
+          "no tables, no bold text and no headings.",
+        "Write every link as a whole address. The site is #{Routes.url("/")}, and a page of " <>
+          "its admin area is #{Routes.url("/admin")} followed by the page's path.",
+        "In this chat you can only read. You cannot change anything here, and nothing " <>
+          "can be confirmed here: when the user asks for a change, tell them to make it " <>
+          "on the site and give the link to the page; never say that you changed " <>
+          "something, and never offer to confirm in the chat."
+      ],
+      "\n"
+    )
+  end
+
   # How the model flags an off-purpose request (spec §8.2 B): the marker the
   # turn looks for at the very end of the answer.
   @flag_rule "To flag a request as off-purpose, end your answer with the line " <>
@@ -104,6 +127,7 @@ defmodule PhoenixKitAgent.Prompt do
   @type ctx :: %{
           required(:user_uuid) => String.t(),
           required(:scope) => Scope.t(),
+          optional(:channel) => :site | :telegram,
           optional(:settings) => UserConfig.effective(),
           optional(:locale) => String.t() | nil,
           optional(:page) => page() | nil,
@@ -118,7 +142,7 @@ defmodule PhoenixKitAgent.Prompt do
 
     [
       Config.system_prompt(),
-      @write_rule,
+      channel_rule(ctx[:channel]),
       self_flag(),
       addendum(user_uuid, locale),
       effective.system_prompt,
@@ -128,6 +152,9 @@ defmodule PhoenixKitAgent.Prompt do
     |> Enum.filter(&(is_binary(&1) and String.trim(&1) != ""))
     |> Enum.join("\n\n")
   end
+
+  defp channel_rule(:telegram), do: telegram_rule()
+  defp channel_rule(_site), do: @write_rule
 
   # ── 1. the guard's off-purpose rule ───────────────────────────────────
 

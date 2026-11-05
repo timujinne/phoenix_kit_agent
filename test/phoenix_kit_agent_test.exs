@@ -54,12 +54,12 @@ defmodule PhoenixKitAgentTest do
       assert PhoenixKitAgent.migration_module() == PhoenixKitAgent.Migrations
     end
 
-    test "permission_metadata/0 declares agent and agent.manage — and no view_all" do
+    test "permission_metadata/0 declares agent, agent.manage and agent.telegram — and no view_all" do
       meta = PhoenixKitAgent.permission_metadata()
 
       assert meta.key == "agent"
       assert is_binary(meta.label) and is_binary(meta.icon) and is_binary(meta.description)
-      assert Enum.map(meta.sub_permissions, & &1.key) == ["manage"]
+      assert Enum.map(meta.sub_permissions, & &1.key) == ["manage", "telegram"]
       refute Enum.any?(meta.sub_permissions, &(&1.key == "view_all"))
     end
 

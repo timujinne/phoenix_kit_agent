@@ -93,6 +93,12 @@ defmodule PhoenixKitAgent.MixProject do
       # OperationPreview component, SessionRef and hidden Storage libraries.
       # 2.64 is the first release with the AI journal's cost in dollars (V223).
       #
+      # The linked Telegram chat as an actor needs core 3.4 (Linking.linked_user/2,
+      # SessionRef.scope_for_user/2, Executor's {:telegram_link, ...} reference,
+      # the opt_in flag of a sub-permission). The feature branches require
+      # ">= 3.4.0 and < 4.0.0"; this integration branch follows the core ref
+      # below, which has to be a core with those.
+      #
       # Core's UploadManager is on main, not in a release yet; back to a Hex
       # requirement once one ships.
       pk_dep(:phoenix_kit,

@@ -12,12 +12,13 @@ defmodule PhoenixKitAgent.PermissionsTest do
   alias PhoenixKit.Users.Permissions
   alias PhoenixKit.Users.Roles
 
-  test "the registry knows agent and agent.manage, and no other agent key" do
+  test "the registry knows agent, agent.manage and agent.telegram, and no other agent key" do
     assert "agent" in Permissions.feature_module_keys()
     assert "agent.manage" in Permissions.sub_permission_keys()
+    assert "agent.telegram" in Permissions.sub_permission_keys()
 
     agent_keys = Enum.filter(Permissions.all_module_keys(), &String.starts_with?(&1, "agent"))
-    assert Enum.sort(agent_keys) == ["agent", "agent.manage"]
+    assert Enum.sort(agent_keys) == ["agent", "agent.manage", "agent.telegram"]
   end
 
   test "the Admin role is given agent and agent.manage automatically" do
@@ -27,6 +28,18 @@ defmodule PhoenixKitAgent.PermissionsTest do
 
     assert Permissions.role_has_permission?(admin_uuid, "agent")
     assert Permissions.role_has_permission?(admin_uuid, "agent.manage")
+  end
+
+  test "the Admin role is not given agent.telegram at boot: it is opt-in; the Owner holds it" do
+    %{uuid: admin_uuid} = Roles.get_role_by_name("Admin")
+
+    :ok = Permissions.auto_grant_new_keys_to_admin()
+
+    refute Permissions.role_has_permission?(admin_uuid, "agent.telegram")
+
+    {:ok, _} = PhoenixKitAgent.enable_system()
+    assert Scope.can?(scope_of(owner_fixture()), "agent.telegram")
+    refute Scope.can?(scope_of(user_with(["agent", "agent.manage"])), "agent.telegram")
   end
 
   describe "Scope.can?/2" do

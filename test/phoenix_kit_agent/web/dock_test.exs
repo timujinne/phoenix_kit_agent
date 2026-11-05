@@ -518,6 +518,22 @@ defmodule PhoenixKitAgent.Web.DockTest do
       assert has_element?(view, "##{top}", "Name me by this")
     end
 
+    test "a chat that came from Telegram carries the mark, an ordinary one does not", ctx do
+      tg =
+        conversation_fixture(ctx.user, %{
+          title: "From Telegram",
+          metadata: %{"source" => "telegram"}
+        })
+
+      web = conversation_fixture(ctx.user, %{title: "From the site"})
+
+      view = dock(ctx, locale: "et")
+      assert has_element?(view, "#pk-agent-chat-source-#{tg.uuid}", "Telegram")
+      refute has_element?(view, "#pk-agent-chat-source-#{web.uuid}")
+
+      assert has_element?(dock(ctx), "#pk-agent-chat-source-#{tg.uuid}", "Telegram")
+    end
+
     test "the times of the list are in the user's language", ctx do
       chat = conversation_fixture(ctx.user, %{title: "Two days"})
       chat |> Ecto.Changeset.change(last_message_at: at(2 * 86_400 + 60)) |> Repo.update!()

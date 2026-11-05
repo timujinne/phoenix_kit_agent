@@ -113,6 +113,18 @@ defmodule PhoenixKitAgent do
             gettext_noop(
               "Edit the module defaults and other users' assistant settings, and see everyone's spending"
             )
+        },
+        # `opt_in: true`: never given to the Admin role at boot, only to the
+        # roles an administrator chooses (core versions that do not know the
+        # flag ignore it).
+        %{
+          key: "telegram",
+          label: gettext_noop("Agent in Telegram"),
+          description:
+            gettext_noop(
+              "Use the AI assistant from the Telegram chat linked to the site bot, to read data with the user's own rights"
+            ),
+          opt_in: true
         }
       ]
     }
@@ -209,6 +221,7 @@ defmodule PhoenixKitAgent do
   def children do
     [
       PhoenixKitAgent.Turns.Supervisor,
+      PhoenixKitAgent.Telegram.Supervisor,
       PhoenixKitAgent.Attachments.Slots,
       {Task.Supervisor, name: PhoenixKitAgent.Attachments.TaskSupervisor},
       {Task.Supervisor, name: PhoenixKitAgent.Attachments.WorkerSupervisor},

@@ -19,6 +19,10 @@ defmodule PhoenixKitAgent.Confirmations do
   it, are refused before anything else is read (the refusals of
   `Conversations.owned_conversation/3`, then `:not_waiting`).
 
+  A linked Telegram chat (the `{:telegram_link, …}` reference) reads only: it
+  has no cards, and every function here is `{:error, :not_in_telegram}` for it
+  (`settle_lapsed_in_turn/2` does nothing).
+
   ## A click
 
   `confirm/5`, `reject/5` and `repeat/5` take the user's turn lock for the
@@ -153,8 +157,11 @@ defmodule PhoenixKitAgent.Confirmations do
   """
   @spec confirm(Conversations.session_ref(), boolean(), term(), term(), keyword()) ::
           {:ok, :confirmed | :changed | :expired | :rejected | :failed} | {:error, refusal()}
-  def confirm(session_ref, impersonated?, conversation_uuid, message_uuid, opts \\ []),
-    do: click(session_ref, impersonated?, conversation_uuid, message_uuid, opts, &do_confirm/1)
+  def confirm(session_ref, impersonated?, conversation_uuid, message_uuid, opts \\ []) do
+    on_the_site(session_ref, fn ->
+      click(session_ref, impersonated?, conversation_uuid, message_uuid, opts, &do_confirm/1)
+    end)
+  end
 
   @doc """
   The user turns down the write the card `message_uuid` waits for:
@@ -164,8 +171,11 @@ defmodule PhoenixKitAgent.Confirmations do
   """
   @spec reject(Conversations.session_ref(), boolean(), term(), term(), keyword()) ::
           {:ok, :rejected | :expired | :confirmed} | {:error, refusal()}
-  def reject(session_ref, impersonated?, conversation_uuid, message_uuid, opts \\ []),
-    do: click(session_ref, impersonated?, conversation_uuid, message_uuid, opts, &do_reject/1)
+  def reject(session_ref, impersonated?, conversation_uuid, message_uuid, opts \\ []) do
+    on_the_site(session_ref, fn ->
+      click(session_ref, impersonated?, conversation_uuid, message_uuid, opts, &do_reject/1)
+    end)
+  end
 
   @doc """
   The user asks again for the write of the card `message_uuid`, whose row ran
@@ -177,8 +187,11 @@ defmodule PhoenixKitAgent.Confirmations do
   """
   @spec repeat(Conversations.session_ref(), boolean(), term(), term(), keyword()) ::
           {:ok, :repeated} | {:error, refusal()}
-  def repeat(session_ref, impersonated?, conversation_uuid, message_uuid, opts \\ []),
-    do: click(session_ref, impersonated?, conversation_uuid, message_uuid, opts, &do_repeat/1)
+  def repeat(session_ref, impersonated?, conversation_uuid, message_uuid, opts \\ []) do
+    on_the_site(session_ref, fn ->
+      click(session_ref, impersonated?, conversation_uuid, message_uuid, opts, &do_repeat/1)
+    end)
+  end
 
   @doc """
   What the chat panel shows of the cards among `messages` (messages of the
@@ -206,18 +219,20 @@ defmodule PhoenixKitAgent.Confirmations do
         ]) ::
           {:ok, %{String.t() => card()}} | {:error, Conversations.refusal()}
   def cards(session_ref, impersonated?, conversation_uuid, messages) when is_list(messages) do
-    with {:ok, conversation} <-
-           Conversations.owned_conversation(session_ref, conversation_uuid,
-             impersonated: impersonated?
-           ) do
-      rows = card_rows(conversation, Enum.map(messages, & &1.uuid))
-      settled = outcomes(conversation, Enum.map(rows, & &1.confirmation_uuid))
+    on_the_site(session_ref, fn ->
+      with {:ok, conversation} <-
+             Conversations.owned_conversation(session_ref, conversation_uuid,
+               impersonated: impersonated?
+             ) do
+        rows = card_rows(conversation, Enum.map(messages, & &1.uuid))
+        settled = outcomes(conversation, Enum.map(rows, & &1.confirmation_uuid))
 
-      {:ok,
-       Map.new(rows, fn row ->
-         {row.uuid, card(session_ref, conversation, row, settled[row.confirmation_uuid])}
-       end)}
-    end
+        {:ok,
+         Map.new(rows, fn row ->
+           {row.uuid, card(session_ref, conversation, row, settled[row.confirmation_uuid])}
+         end)}
+      end
+    end)
   end
 
   @doc """
@@ -229,13 +244,15 @@ defmodule PhoenixKitAgent.Confirmations do
   @spec waiting_cards(Conversations.session_ref(), boolean(), term()) ::
           {:ok, [Message.t()]} | {:error, Conversations.refusal()}
   def waiting_cards(session_ref, impersonated?, conversation_uuid) do
-    with {:ok, conversation} <-
-           Conversations.owned_conversation(session_ref, conversation_uuid,
-             impersonated: impersonated?
-           ) do
-      {:ok,
-       conversation |> waiting_query() |> repo().all() |> Enum.map(&Conversations.client_view/1)}
-    end
+    on_the_site(session_ref, fn ->
+      with {:ok, conversation} <-
+             Conversations.owned_conversation(session_ref, conversation_uuid,
+               impersonated: impersonated?
+             ) do
+        {:ok,
+         conversation |> waiting_query() |> repo().all() |> Enum.map(&Conversations.client_view/1)}
+      end
+    end)
   end
 
   @doc """
@@ -249,17 +266,23 @@ defmodule PhoenixKitAgent.Confirmations do
   @spec settle_lapsed(Conversations.session_ref(), boolean(), term()) ::
           :ok | {:error, Conversations.refusal() | :turn_running | :click_running}
   def settle_lapsed(session_ref, impersonated?, conversation_uuid) do
-    with {:ok, conversation} <-
-           Conversations.owned_conversation(session_ref, conversation_uuid,
-             impersonated: impersonated?
-           ) do
-      if lapsed(session_ref, conversation) == [],
-        do: :ok,
-        else:
-          locked(conversation.user_uuid, fn _click_ref ->
-            settle_lapsed_in_turn(session_ref, conversation)
-          end)
-    end
+    on_the_site(session_ref, fn ->
+      with {:ok, conversation} <-
+             Conversations.owned_conversation(session_ref, conversation_uuid,
+               impersonated: impersonated?
+             ) do
+        settle_if_lapsed(session_ref, conversation)
+      end
+    end)
+  end
+
+  defp settle_if_lapsed(session_ref, conversation) do
+    if lapsed(session_ref, conversation) == [],
+      do: :ok,
+      else:
+        locked(conversation.user_uuid, fn _click_ref ->
+          settle_lapsed_in_turn(session_ref, conversation)
+        end)
   end
 
   @doc false
@@ -267,6 +290,8 @@ defmodule PhoenixKitAgent.Confirmations do
   # (`PhoenixKitAgent.Turns`, before it reads the history), with the chat it
   # owns. A notice the chat refuses is logged by its codes, as a click's.
   @spec settle_lapsed_in_turn(Conversations.session_ref(), Conversation.t()) :: :ok
+  def settle_lapsed_in_turn({:telegram_link, _user, _connection, _chat}, %Conversation{}), do: :ok
+
   def settle_lapsed_in_turn(session_ref, %Conversation{} = conversation) do
     for {card, outcome} <- lapsed(session_ref, conversation),
         do: settle(%{conversation: conversation, card: card}, outcome)
@@ -302,6 +327,13 @@ defmodule PhoenixKitAgent.Confirmations do
           lapse(&1, turn.session_ref, conversation) == nil)
     )
   end
+
+  # A linked Telegram chat reads only: it neither sees a card nor answers one
+  # (the card of a conversation it shares with the site is the site's to close).
+  defp on_the_site({:telegram_link, _user, _connection, _chat}, _fun),
+    do: {:error, :not_in_telegram}
+
+  defp on_the_site(_session_ref, fun), do: fun.()
 
   # ── a click ─────────────────────────────────────────────────────
 

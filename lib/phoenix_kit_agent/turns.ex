@@ -488,7 +488,7 @@ defmodule PhoenixKitAgent.Turns do
       endpoint_uuid: user.endpoint_uuid,
       text: text,
       attachment_uuids: Enum.map(attachments, & &1.uuid),
-      system_prompt: system_prompt(user, request_context, opts),
+      system_prompt: system_prompt(session_ref, user, request_context, opts),
       history: history(conversation, text, attachments),
       request_context: request_context,
       max_rounds: Config.max_tool_rounds(),
@@ -510,11 +510,12 @@ defmodule PhoenixKitAgent.Turns do
 
   # §7.1: see `PhoenixKitAgent.Prompt`. The locale is the one the host passed,
   # else the language of the request context, else the process's.
-  defp system_prompt(user, request_context, opts) do
+  defp system_prompt(session_ref, user, request_context, opts) do
     Prompt.build(%{
       user_uuid: user.settings.user_uuid,
       scope: user.scope,
       settings: user.settings,
+      channel: Conversations.channel(session_ref),
       locale:
         Keyword.get(opts, :locale) || request_context[:language] ||
           Gettext.get_locale(PhoenixKitWeb.Gettext),

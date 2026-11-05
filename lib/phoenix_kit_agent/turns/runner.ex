@@ -13,7 +13,8 @@ defmodule PhoenixKitAgent.Turns.Runner do
     b. lists the session's tools (`Executor.visible_for/3`, `allow: :all`: the
        read tools, and the write tools of the modules that let a session
        write, `api_session_write_modules` in core) and shows them to the model
-       (`PhoenixKitAgent.Turns.Tools`);
+       (`PhoenixKitAgent.Turns.Tools`). For a linked Telegram chat the call has
+       no `allow: :all` (and no `via:`): core lists it the read tools only;
     c. sends the system prompt, the history and this turn's messages — of the
        results of earlier rounds of this turn only as many as fit, together
        with the newest round's, in `10 × agent_tool_result_chars` characters
@@ -170,7 +171,7 @@ defmodule PhoenixKitAgent.Turns.Runner do
   @typedoc "Everything a turn needs; built by `PhoenixKitAgent.Turns.start/6`."
   @type turn :: %{
           turn_ref: String.t(),
-          session_ref: PhoenixKit.Users.Auth.SessionRef.t(),
+          session_ref: Conversations.session_ref(),
           user_uuid: String.t(),
           conversation_uuid: String.t(),
           endpoint_uuid: String.t(),
@@ -377,10 +378,22 @@ defmodule PhoenixKitAgent.Turns.Runner do
   end
 
   defp visible_tools(turn) do
-    case Executor.visible_for(turn.session_ref, :admin, allow: :all) do
+    case Executor.visible_for(turn.session_ref, :admin, tool_access(turn)) do
       {:ok, tools, _headers} -> {:ok, tools}
       {:error, :unauthorized, _detail, %{reason: reason}, _headers} -> {:error, reason}
       {:error, code, _detail, _context, _headers} -> {:error, code}
+    end
+  end
+
+  # A session may be offered the writes too (core holds each for the user's
+  # confirmation); a linked Telegram chat reads only, which is core's default
+  # for it, and `allow: :all` would raise for it. Its `via` is core's own,
+  # "telegram". `via: "agent"` of a site session is the audit label of
+  # `execute_as/5`; `visible_for/3` takes the same options and ignores it.
+  defp tool_access(%{session_ref: session_ref}) do
+    case Conversations.channel(session_ref) do
+      :telegram -> []
+      :site -> [allow: :all, via: "agent"]
     end
   end
 
@@ -666,10 +679,12 @@ defmodule PhoenixKitAgent.Turns.Runner do
   defp execute(turn, tool, arguments) do
     case Tools.arguments(arguments) do
       {:ok, input} ->
-        case Executor.execute_as(turn.session_ref, :admin, tool.name, input,
-               allow: :all,
-               via: "agent",
-               request_context: turn.request_context
+        case Executor.execute_as(
+               turn.session_ref,
+               :admin,
+               tool.name,
+               input,
+               tool_access(turn) ++ [request_context: turn.request_context]
              ) do
           {:ok, %{result: result}, _headers} ->
             executed(tool, result)
@@ -791,6 +806,10 @@ defmodule PhoenixKitAgent.Turns.Runner do
   end
 
   # ── notices ─────────────────────────────────────────────────────
+
+  # Core's `:unlinked` (the link of a chat dropped between the round's check
+  # and the tool list) is the same ending as a gone session.
+  defp stopped(turn, :unlinked), do: stopped(turn, :session_gone)
 
   defp stopped(turn, reason) when is_atom(reason) do
     notice(turn, Atom.to_string(reason), stop_text(reason))
