@@ -182,6 +182,28 @@ defmodule PhoenixKitAgent.Telegram.FlowTest do
                )
     end
 
+    test "the conversation is the user's own, whatever the update names", ctx do
+      stranger = user_with(["agent"], "other")
+      theirs = conversation_fixture(stranger)
+
+      model_says("Mine.")
+
+      send_update(ctx, "Hello",
+        extra: %{"conversation_uuid" => theirs.uuid, "reply_to_message" => %{"message_id" => 1}}
+      )
+
+      calls_until(reaction?("👍"))
+
+      mine = Conversations.latest_telegram_conversation(ctx.user.uuid)
+      assert mine.uuid != theirs.uuid
+      assert mine.user_uuid == ctx.user.uuid
+
+      assert Repo.aggregate(
+               from(m in Message, where: m.conversation_uuid == ^theirs.uuid),
+               :count
+             ) == 0
+    end
+
     test "the next message continues the same conversation; /new starts another", ctx do
       model_says("First.")
       send_update(ctx, "One", message_id: 1)
