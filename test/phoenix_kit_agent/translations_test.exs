@@ -44,7 +44,7 @@ defmodule PhoenixKitAgent.TranslationsTest do
     "et" => ["MB", "s", "Telegram"],
     "ru" => ["Telegram"],
     "uk" => ["Telegram"],
-    "de" => ["MB", "s", "Limits", "Telegram", "Agent in Telegram"],
+    "de" => ["MB", "s", "Limits", "Telegram", "Agent in Telegram", "Status"],
     "fr" => ["s", "Message", "Assistant", "Telegram"]
   }
 

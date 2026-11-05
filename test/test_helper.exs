@@ -39,6 +39,7 @@ support_dir = Path.expand("support", __DIR__)
   {PhoenixKitAgent.Test.LogProbe, "log_probe.ex"},
   {PhoenixKitAgent.Test.Addenda, "prompt_addenda.ex"},
   {PhoenixKitAgent.Test.Files, "files.ex"},
+  {PhoenixKitAgent.Test.TelegramClient, "telegram_client.ex"},
   {PhoenixKitAgent.DataCase, "data_case.ex"},
   {PhoenixKitAgent.LiveCase, "live_case.ex"}
 ]

@@ -221,6 +221,7 @@ defmodule PhoenixKitAgent do
   def children do
     [
       PhoenixKitAgent.Turns.Supervisor,
+      PhoenixKitAgent.Telegram.Supervisor,
       PhoenixKitAgent.Attachments.Slots,
       {Task.Supervisor, name: PhoenixKitAgent.Attachments.TaskSupervisor},
       {Task.Supervisor, name: PhoenixKitAgent.Attachments.WorkerSupervisor},

@@ -39,6 +39,11 @@ defmodule PhoenixKitAgent.Web.SettingsLive do
   (`PhoenixKitAgent.Models.reports_cost?/2`), the limits say that money is not
   counted for it and only the turn limit applies.
 
+  The Telegram section switches `agent_telegram_enabled` (the assistant
+  answering the linked chats of the website bot, `PhoenixKitAgent.Telegram`) and
+  shows what the reader is doing (`PhoenixKitAgent.Telegram.Status`). It needs
+  `agent.manage`, checked on every event like the other forms.
+
   One setting is not for every manager: `agent_capture_ai_content` (whether the
   bodies of the assistant's requests go to the AI journal, where every holder of
   `ai` reads them on `/admin/ai/usage`) is switched by an Owner only. The check
@@ -62,6 +67,7 @@ defmodule PhoenixKitAgent.Web.SettingsLive do
 
   alias PhoenixKit.Utils.Routes
   alias PhoenixKitAgent.{Config, Models, UserConfig}
+  alias PhoenixKitAgent.Telegram.Status
   alias PhoenixKitAgent.Web.{Access, ToolAvailability}
 
   # The fields of the models form.
@@ -82,6 +88,7 @@ defmodule PhoenixKitAgent.Web.SettingsLive do
        )
        |> assign(money_off?: money_off?())
        |> assign_capture()
+       |> assign_telegram()
        |> assign_form(Config.defaults_changeset(%{}) |> Map.put(:action, nil))
        |> assign_models()
        |> assign_prompt(Config.system_prompt() || "", [])
@@ -116,6 +123,13 @@ defmodule PhoenixKitAgent.Web.SettingsLive do
     end
   end
 
+  def handle_event("save_telegram", %{"telegram" => %{"enabled" => enabled}}, socket)
+      when enabled in ["true", "false"] do
+    if Access.may_manage?(socket),
+      do: {:noreply, save_telegram(socket, enabled == "true")},
+      else: {:noreply, denied(socket)}
+  end
+
   def handle_event("save_models", %{"models" => params}, socket) when is_map(params) do
     if Access.may_manage?(socket),
       do: {:noreply, save_models(socket, params)},
@@ -142,6 +156,7 @@ defmodule PhoenixKitAgent.Web.SettingsLive do
              "validate",
              "save",
              "save_capture",
+             "save_telegram",
              "save_models",
              "save_prompt",
              "save_watchers"
@@ -433,6 +448,52 @@ defmodule PhoenixKitAgent.Web.SettingsLive do
     end
   end
 
+  defp save_telegram(socket, value) do
+    case Config.put_telegram_enabled(value,
+           actor_uuid: Access.user_uuid(socket),
+           source: "settings"
+         ) do
+      {:ok, _setting} ->
+        socket |> assign_telegram() |> put_flash(:info, gettext("Telegram setting saved."))
+
+      {:error, _changeset} ->
+        socket
+        |> assign_telegram()
+        |> put_flash(:error, gettext("The setting could not be saved. Nothing was changed."))
+    end
+  end
+
+  # What the Telegram section shows: the switch and what the reader is doing.
+  defp assign_telegram(socket) do
+    assign(socket, telegram?: Config.telegram_enabled?(), telegram_status: Status.current())
+  end
+
+  defp telegram_status_text(:off), do: gettext("Off: the assistant does not answer in Telegram.")
+
+  defp telegram_status_text(:no_bot),
+    do:
+      gettext(
+        "No website bot is chosen for user notifications, so there is no chat to answer. Choose one in the Telegram integration."
+      )
+
+  defp telegram_status_text(:webhook),
+    do: gettext("The bot has a webhook set, so its messages cannot be read. Remove the webhook.")
+
+  defp telegram_status_text(:conflict),
+    do:
+      gettext(
+        "Conflict: the bot is read by someone else (another reader or a webhook). The reader waits and tries again."
+      )
+
+  defp telegram_status_text(:no_model),
+    do:
+      gettext("No default model is chosen, so only users with a model of their own are answered.")
+
+  defp telegram_status_text(:reading), do: gettext("Reading the bot's messages.")
+
+  defp telegram_status_text(:starting),
+    do: gettext("Switched on. The reader starts within half a minute.")
+
   # What the capture section shows: the stored state, and whether this person
   # may change it.
   defp assign_capture(socket) do
@@ -661,6 +722,41 @@ defmodule PhoenixKitAgent.Web.SettingsLive do
               {if @capture?, do: gettext("On"), else: gettext("Off")}
             </span>
             {gettext("Only an Owner can change this setting.")}
+          </p>
+        </div>
+      </section>
+
+      <section id="agent-telegram" class="card bg-base-100 shadow-sm">
+        <div class="card-body gap-4">
+          <h2 class="card-title text-base">{gettext("Assistant in Telegram")}</h2>
+          <p class="text-sm text-base-content/70">
+            {gettext(
+              "When on, a person who linked their Telegram chat to the website bot (Profile → Telegram) and whose role has the right \"Agent in Telegram\" can write to the bot, and the assistant answers there with that person's own rights, model and limits. It only reads: a change is made on the site."
+            )}
+          </p>
+          <.form
+            for={%{}}
+            as={:telegram}
+            id="agent-telegram-form"
+            phx-submit="save_telegram"
+            class="flex items-center justify-between gap-4"
+          >
+            <.checkbox
+              variant="toggle"
+              id="agent-telegram-enabled"
+              name="telegram[enabled]"
+              checked={@telegram?}
+              label={gettext("Answer in Telegram")}
+            />
+            <.button type="submit" variant="primary" id="agent-telegram-save">
+              {gettext("Save")}
+            </.button>
+          </.form>
+          <p id="agent-telegram-status" class="text-sm">
+            <span class={["badge", if(@telegram_status == :reading, do: "badge-success", else: "badge-ghost")]}>
+              {gettext("Status")}
+            </span>
+            {telegram_status_text(@telegram_status)}
           </p>
         </div>
       </section>

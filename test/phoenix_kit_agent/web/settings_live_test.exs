@@ -12,6 +12,7 @@ defmodule PhoenixKitAgent.Web.SettingsLiveTest do
   alias PhoenixKit.Users.Auth.Scope
   alias PhoenixKit.Users.{Permissions, RoleAssignment, Roles}
   alias PhoenixKitAgent.Config
+  alias PhoenixKitAgent.Telegram.Reader
   alias PhoenixKitAgent.Test.{LogProbe, Tools}
 
   @path "/en/admin/settings/agent"
@@ -643,6 +644,106 @@ defmodule PhoenixKitAgent.Web.SettingsLiveTest do
 
       assert tool_status(view, "agenttest.list_items", "closed")
       assert tool_reason(view, "agenttest.list_items", "no_permission")
+    end
+  end
+
+  describe "the assistant in Telegram" do
+    alias PhoenixKitAgent.Test.TelegramClient
+
+    setup %{conn: conn} do
+      TelegramClient.start()
+      on_exit(&TelegramClient.stop/0)
+      manager = user_with(["agent", "agent.manage"], "tg_manager")
+      %{conn: log_in(conn, manager), manager: manager}
+    end
+
+    defp status_text(view), do: view |> element("#agent-telegram-status") |> render()
+
+    test "is off by default, and says so", %{conn: conn} do
+      {:ok, view, _html} = live(conn, @path)
+
+      assert has_element?(view, "#agent-telegram-form")
+      refute has_element?(view, "#agent-telegram-enabled[checked]")
+      assert status_text(view) =~ "Off"
+      refute Config.telegram_enabled?()
+    end
+
+    test "the switch is saved, with who saved it, and read back", %{conn: conn, manager: manager} do
+      {:ok, view, _html} = live(conn, @path)
+
+      view |> form("#agent-telegram-form", telegram: %{enabled: "true"}) |> render_submit()
+
+      assert has_element?(view, "#flash-info")
+      assert Config.telegram_enabled?()
+      assert has_element?(view, "#agent-telegram-enabled[checked]")
+      assert [entry] = settings_entries("agent_telegram_enabled")
+      assert entry.actor_uuid == manager.uuid
+
+      view |> form("#agent-telegram-form", telegram: %{enabled: "false"}) |> render_submit()
+      refute Config.telegram_enabled?()
+    end
+
+    test "the unchecked switch reaches the server as a value, not as a missing form", %{
+      conn: conn
+    } do
+      {:ok, _} = Config.put_telegram_enabled(true, [])
+      {:ok, view, _html} = live(conn, @path)
+
+      assert has_element?(
+               view,
+               "#agent-telegram-form input[type=hidden][name='telegram[enabled]']"
+             )
+    end
+
+    test "the status line follows the state", %{conn: conn} do
+      {:ok, view, _html} = live(conn, @path)
+
+      view |> form("#agent-telegram-form", telegram: %{enabled: "true"}) |> render_submit()
+      assert status_text(view) =~ "No website bot"
+
+      connection = UUIDv7.generate()
+      TelegramClient.set(:connection, connection)
+      view |> form("#agent-telegram-form", telegram: %{enabled: "true"}) |> render_submit()
+      assert status_text(view) =~ "No default model"
+
+      endpoint = endpoint_fixture()
+      {:ok, _} = Settings.update_setting("agent_default_endpoint_uuid", endpoint.uuid)
+      view |> form("#agent-telegram-form", telegram: %{enabled: "true"}) |> render_submit()
+      assert status_text(view) =~ "Switched on"
+
+      :yes = :global.register_name(Reader.name_of(connection), self())
+      on_exit(fn -> :global.unregister_name(Reader.name_of(connection)) end)
+      view |> form("#agent-telegram-form", telegram: %{enabled: "true"}) |> render_submit()
+      assert status_text(view) =~ "Reading"
+    end
+
+    test "a forged value or a form without fields changes nothing", %{conn: conn} do
+      {:ok, view, _html} = live(conn, @path)
+
+      assert render_hook(view, "save_telegram", %{"telegram" => %{"enabled" => "maybe"}})
+      assert render_hook(view, "save_telegram", %{})
+      refute Config.telegram_enabled?()
+      assert Process.alive?(view.pid)
+    end
+
+    test "nothing is saved for a manager who lost the right after the page opened", %{
+      conn: conn,
+      manager: manager
+    } do
+      {:ok, view, _html} = live(conn, @path)
+
+      [role] =
+        manager
+        |> Roles.get_user_roles()
+        |> Enum.reject(&(&1 in ["Owner", "Admin", "User"]))
+        |> Enum.map(&Roles.get_role_by_name/1)
+
+      :ok = Permissions.revoke_permission(role.uuid, "agent.manage")
+
+      view |> form("#agent-telegram-form", telegram: %{enabled: "true"}) |> render_submit()
+
+      assert has_element?(view, "#flash-error")
+      refute Config.telegram_enabled?()
     end
   end
 
