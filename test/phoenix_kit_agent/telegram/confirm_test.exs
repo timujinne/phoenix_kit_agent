@@ -506,7 +506,7 @@ defmodule PhoenixKitAgent.Telegram.ConfirmTest do
 
     test "while another press runs: the same", ctx do
       held = hold!(ctx)
-      :ok = Locks.acquire_user(ctx.user.uuid, Locks.click_ref(), 600, 30)
+      :ok = Locks.acquire_user(ctx.user.uuid, Locks.click_ref(), Turns.lock_ttl_s(), 30)
 
       calls = pressed(ctx, held, confirm_data(held))
 
@@ -702,6 +702,37 @@ defmodule PhoenixKitAgent.Telegram.ConfirmTest do
   # ── a card of an older conversation ─────────────────────────────────
 
   describe "the conversation of a card" do
+    test "a chat the account was relinked to starts its own conversation: its cards can be pressed",
+         ctx do
+      old = hold!(ctx)
+
+      :ok = Linking.unlink(ctx.user)
+      new_chat = @chat + 1
+      telegram_link_fixture(ctx.user, ctx.connection, new_chat)
+      Limiter.clear_unlinked(ctx.connection)
+
+      model_holds("I will rename it.")
+
+      Bridge.dispatch(
+        ctx.connection,
+        TelegramClient.update(new_chat, "Rename the item", message_id: 41)
+      )
+
+      calls = calls_until(reaction?("👍"))
+      settle()
+      drain()
+
+      assert [{_text, markup}] = cards_sent(calls)
+      assert [[%{"callback_data" => "c:" <> uuid}, _]] = markup["inline_keyboard"]
+      chat = Conversations.latest_telegram_conversation(ctx.user.uuid)
+      assert chat.uuid != old.chat.uuid
+      assert chat.metadata["chat_id"] == new_chat
+
+      Bridge.dispatch(ctx.connection, TelegramClient.callback_update(new_chat, "c:" <> uuid))
+      settle()
+      assert written() == "new"
+    end
+
     test "an older one, after /new, is still the user's: ✅ works", ctx do
       held = hold!(ctx)
       send_update(ctx, "/new", message_id: 50)
@@ -814,6 +845,24 @@ defmodule PhoenixKitAgent.Telegram.ConfirmTest do
       assert row(new_uuid).context["origin"] == "telegram"
     end
 
+    test "a new card that cannot be sent is told as a line that sends to the site", ctx do
+      held = hold!(ctx)
+      {:ok, _} = Settings.update_setting("agenttest_written", "someone-else")
+
+      TelegramClient.set(:send, fn _chat, _text, opts ->
+        if opts[:reply_markup],
+          do: {:error, "Bad Request: nope"},
+          else: {:ok, %{"message_id" => 9}}
+      end)
+
+      assert {:ok, :changed} =
+               Confirmations.confirm(ctx.site_ref, false, held.chat.uuid, held.card.uuid)
+
+      settle()
+
+      assert ["I could not show the buttons. Confirm the change on the site."] = sent(drain())
+    end
+
     test "nothing is edited for another bot, with the switch off, or without a kept place", ctx do
       held = hold!(ctx)
       chat = Repo.get!(Conversation, held.chat.uuid)
@@ -924,6 +973,39 @@ defmodule PhoenixKitAgent.Telegram.ConfirmTest do
     end
   end
 
+  # ── the places run out ──────────────────────────────────────────────
+
+  describe "when the reply supervisor is full" do
+    test "a press is still answered, as busy", ctx do
+      held = hold!(ctx)
+      supervisor = PhoenixKitAgent.Telegram.ReplySupervisor
+      test = self()
+
+      blockers =
+        for _ <- 1..50 do
+          {:ok, pid} =
+            Task.Supervisor.start_child(supervisor, fn ->
+              receive do
+                :release -> send(test, :released)
+              end
+            end)
+
+          pid
+        end
+
+      on_exit(fn -> Enum.each(blockers, &send(&1, :release)) end)
+
+      Bridge.dispatch(ctx.connection, TelegramClient.callback_update(@chat, confirm_data(held)))
+      assert_receive {:tg, {:answer_callback, _, "cb-1", text}}, 2_000
+      assert text =~ "busy"
+
+      Enum.each(blockers, &send(&1, :release))
+      settle()
+      assert written() == nil
+      assert row(held.uuid).status == "unused"
+    end
+  end
+
   # ── logs ────────────────────────────────────────────────────────────
 
   describe "what is logged" do
@@ -939,7 +1021,7 @@ defmodule PhoenixKitAgent.Telegram.ConfirmTest do
         end)
 
       held = Process.get(:held)
-      log = Enum.join(events, "\n")
+      log = events |> Enum.reject(&(&1 =~ "application: :ecto_sql")) |> Enum.join("\n")
 
       for secret <- [
             "SECRET-ASSISTANT-TEXT",

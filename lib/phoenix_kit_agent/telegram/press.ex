@@ -12,9 +12,9 @@ defmodule PhoenixKitAgent.Telegram.Press do
        chat, the status of its row. A press that cannot go on is answered
        with a toast (`answerCallbackQuery`); a card that is gone, ran out or
        was settled elsewhere is also edited to say so, without buttons;
-    2. the message of the card is remembered for the confirmation, if no
+    2. an empty `answerCallbackQuery`, which takes the "clock" off the button;
+    3. the message of the card is remembered for the confirmation, if no
        message is kept for it yet (so the edit after the outcome finds it);
-    3. an empty `answerCallbackQuery`, which takes the "clock" off the button;
     4. the click (`Confirmations.confirm_press/3` / `reject_press/3`).
 
   What came of the click is shown by the edit of `PhoenixKitAgent.Telegram.Cards`
@@ -53,8 +53,8 @@ defmodule PhoenixKitAgent.Telegram.Press do
 
   defp go({state, press_card}, connection, ref, press, locale)
        when state in [:open, :forbidden] do
-    remember(connection, ref, press, press_card)
     answer(connection, press.callback_id, nil)
+    remember(connection, ref, press, press_card)
     click(connection, ref, press, locale)
   end
 
@@ -137,13 +137,15 @@ defmodule PhoenixKitAgent.Telegram.Press do
   defp edit_note(connection, {:telegram_link, _, _, chat_id} = ref, press, mode) do
     # Read again right before the edit: a card that has its outcome by now is
     # the edit of that outcome's.
+    # Only a card that still waits gets the line; one that was handled,
+    # settled or ran out in the meantime is left to the edit of its outcome.
     case Confirmations.precheck(ref, press.confirmation_uuid) do
-      {:settled, _press_card, _outcome} ->
-        :ok
-
-      _still_open ->
+      {state, _press_card} when state in [:open, :forbidden] ->
         %{text: text, markup: markup} = Card.build(ref, press.confirmation_uuid, mode)
         Cards.edit_card(connection, chat_id, press.message_id, text, markup)
+        :ok
+
+      _handled_or_gone ->
         :ok
     end
   end

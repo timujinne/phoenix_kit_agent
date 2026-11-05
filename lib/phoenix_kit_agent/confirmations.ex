@@ -323,7 +323,7 @@ defmodule PhoenixKitAgent.Confirmations do
 
     case old do
       %Message{assistant_message_uuid: assistant, tool_call_id: call_id}
-      when is_binary(assistant) ->
+      when is_binary(assistant) and is_binary(call_id) ->
         repo().one(
           from(m in Message,
             where:

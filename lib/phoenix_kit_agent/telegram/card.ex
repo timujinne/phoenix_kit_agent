@@ -32,9 +32,10 @@ defmodule PhoenixKitAgent.Telegram.Card do
 
   alias PhoenixKit.API.Approvals.View
   alias PhoenixKitAgent.Config
+  alias PhoenixKitAgent.Telegram.Format
 
-  # Telegram counts UTF-16 units; a little room for the emoji.
-  @max_text 4_000
+  # Telegram's limit is 4096 UTF-16 units; a little room is left.
+  @max_units 4_000
   @rows_budget 3_000
   @technical_chars 1_500
 
@@ -105,19 +106,25 @@ defmodule PhoenixKitAgent.Telegram.Card do
 
   # ── an open card ──────────────────────────────────────────────────
 
+  # A card whose preview does not fit whole is never offered for ✅: the person
+  # would confirm what they cannot read. It shows what fits and sends them to
+  # the site, with ❌ alone.
   defp open({:ok, %{status: "unused", preview: preview}}, confirmation_uuid, note) do
-    %{lines: lines, technical_cut?: cut?} = body(preview)
+    %{summary: summary, lines: lines, technical_cut?: cut?} = body(preview)
+    head = gettext("Confirm this change:")
+    whole = Enum.join([head | lines] ++ note_lines(note), "\n")
 
-    {footer, kind} =
-      if cut?,
-        do:
-          {[gettext("This change is too large to confirm here. Confirm it on the site.")],
-           :reject},
-        else: {[], :both}
-
-    text = fit([gettext("Confirm this change:") | lines] ++ footer ++ note_lines(note))
-    %{text: text, markup: buttons(confirmation_uuid, kind)}
+    if cut? or Format.units(whole) > @max_units do
+      too_large = gettext("This change is too large to confirm here. Confirm it on the site.")
+      text = fit([head | summary] ++ [too_large] ++ note_lines(note))
+      %{text: text, markup: buttons(confirmation_uuid, :reject)}
+    else
+      %{text: whole, markup: buttons(confirmation_uuid, :both)}
+    end
   end
+
+  defp open({:ok, %{status: status}}, _confirmation_uuid, _note) when status != "unused",
+    do: %{text: gettext("Already handled."), markup: nil}
 
   defp open({:error, :forbidden}, confirmation_uuid, note) do
     text =
@@ -149,7 +156,7 @@ defmodule PhoenixKitAgent.Telegram.Card do
     summary = Enum.map(view.summary, fn {label, value} -> "#{label}: #{value_text(value)}" end)
 
     if opts[:summary_only] do
-      %{lines: summary, technical_cut?: false}
+      %{summary: summary, lines: summary, technical_cut?: false}
     else
       {rows, hidden} = rows(view)
       {technical, cut?} = technical(view.technical)
@@ -160,7 +167,7 @@ defmodule PhoenixKitAgent.Telegram.Card do
           hidden_line(hidden) ++
           Enum.map(view.warnings, &("⚠ " <> &1)) ++ technical
 
-      %{lines: lines, technical_cut?: cut?}
+      %{summary: summary, lines: lines, technical_cut?: cut?}
     end
   end
 
@@ -169,7 +176,7 @@ defmodule PhoenixKitAgent.Telegram.Card do
     {lines, _used, shown} =
       Enum.reduce_while(view.rows, {[], 0, 0}, fn row, {acc, used, count} ->
         text = row_text(row)
-        size = String.length(text) + 1
+        size = Format.units(text) + 1
 
         if used + size > @rows_budget and count > 0,
           do: {:halt, {acc, used, count}},
@@ -224,11 +231,27 @@ defmodule PhoenixKitAgent.Telegram.Card do
     end
   end
 
+  # At most @max_units UTF-16 units, cut on a character boundary.
   defp fit(lines) do
     text = Enum.join(lines, "\n")
 
-    if String.length(text) > @max_text,
-      do: String.slice(text, 0, @max_text - 1) <> "…",
+    if Format.units(text) > @max_units,
+      do: take_units(text, @max_units - 1) <> "…",
       else: text
+  end
+
+  defp take_units(text, limit) do
+    {kept, _used} =
+      text
+      |> String.graphemes()
+      |> Enum.reduce_while({[], 0}, fn grapheme, {acc, used} ->
+        size = Format.units(grapheme)
+
+        if used + size > limit,
+          do: {:halt, {acc, used}},
+          else: {:cont, {[grapheme | acc], used + size}}
+      end)
+
+    kept |> Enum.reverse() |> Enum.join()
   end
 end

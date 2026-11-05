@@ -22,6 +22,17 @@ defmodule PhoenixKitAgent.Telegram.TextsTest do
     refute Texts.refusal(:conversation_busy) =~ "Stop"
   end
 
+  test "a refusal of core under a card is never shown as its code" do
+    for code <- [:module_write_disabled, "other_origin", "used", :anything] do
+      text = Texts.press_note({:refused, code})
+      assert text == "Not allowed right now."
+      refute text =~ to_string(code)
+    end
+
+    assert Texts.press_note({:refused, :forbidden}) =~ "no right"
+    assert Texts.press_note(:turn_running) =~ "⏳"
+  end
+
   test "both are told in every language of the module" do
     for locale <- ~w(et ru uk fr de) do
       Gettext.with_locale(PhoenixKitAgent.Gettext, locale, fn ->

@@ -21,7 +21,7 @@ defmodule PhoenixKitAgent.Telegram.Cards do
 
   alias PhoenixKitAgent.{Config, Confirmations, Conversations}
   alias PhoenixKitAgent.Schemas.{Conversation, Message}
-  alias PhoenixKitAgent.Telegram.{Bridge, Card, Client}
+  alias PhoenixKitAgent.Telegram.{Bridge, Card, Client, Texts}
 
   require Logger
 
@@ -79,8 +79,13 @@ defmodule PhoenixKitAgent.Telegram.Cards do
   # No supervisor (the host does not run the bridge) is no failure of the
   # notice that was committed.
   defp start(message) do
-    _ =
-      Task.Supervisor.start_child(@replies, fn -> Bridge.safely(fn -> settled(message) end) end)
+    case Task.Supervisor.start_child(@replies, fn -> Bridge.safely(fn -> settled(message) end) end) do
+      {:error, :max_children} ->
+        Logger.warning("[PhoenixKitAgent] telegram reply tasks are full: a card edit was dropped")
+
+      _started ->
+        :ok
+    end
 
     :ok
   catch
@@ -109,11 +114,16 @@ defmodule PhoenixKitAgent.Telegram.Cards do
     edit_card(connection, chat_id, message_id, text, nil)
   end
 
-  defp replacement(connection, ref, message) do
-    case Confirmations.replacement_card(message.conversation_uuid, message.confirmation_uuid) do
-      %Message{} = card -> deliver(connection, ref, message.conversation_uuid, card)
-      nil -> :ok
+  # The new card of a change whose data moved; one that cannot be sent is a
+  # line that sends the person to the site (as for a turn's card).
+  defp replacement(connection, {:telegram_link, _, _, chat_id} = ref, message) do
+    with %Message{} = card <-
+           Confirmations.replacement_card(message.conversation_uuid, message.confirmation_uuid),
+         :error <- deliver(connection, ref, message.conversation_uuid, card) do
+      Bridge.say(connection, chat_id, Texts.static(:card_not_shown))
     end
+
+    :ok
   end
 
   @doc false

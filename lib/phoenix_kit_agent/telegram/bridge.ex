@@ -147,7 +147,10 @@ defmodule PhoenixKitAgent.Telegram.Bridge do
         :ok
 
       {:press, {:telegram_link, _user, _connection, _chat} = ref, press} ->
-        async(fn -> Press.run(connection_uuid, ref, press) end)
+        if start(fn -> Press.run(connection_uuid, ref, press) end) == :busy,
+          do: busy_press(connection_uuid, press.callback_id)
+
+        :ok
 
       {:answer, callback_id, kind} ->
         answer_press(connection_uuid, callback_id, kind)
@@ -386,7 +389,25 @@ defmodule PhoenixKitAgent.Telegram.Bridge do
   end
 
   defp async(fun) do
-    _ = Task.Supervisor.start_child(PhoenixKitAgent.Telegram.ReplySupervisor, fun)
+    _ = start(fun)
+    :ok
+  end
+
+  # `:busy` when the reply supervisor is full.
+  defp start(fun) do
+    case Task.Supervisor.start_child(PhoenixKitAgent.Telegram.ReplySupervisor, fun) do
+      {:error, :max_children} -> :busy
+      _started -> :ok
+    end
+  end
+
+  # A press that cannot be carried out for want of a place is still answered
+  # (the button would spin), in a task of its own that nothing waits for.
+  defp busy_press(connection_uuid, callback_id) do
+    require Logger
+    Logger.warning("[PhoenixKitAgent] telegram reply tasks are full: a press was not carried out")
+
+    _ = Task.start(fn -> safely(fn -> send_answer(connection_uuid, callback_id, :busy) end) end)
     :ok
   end
 

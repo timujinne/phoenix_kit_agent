@@ -57,6 +57,7 @@ defmodule PhoenixKitAgent.Telegram.Texts do
           | :foreign
           | :unknown_button
           | :unlinked
+          | :busy
         ) :: String.t()
   def toast(:unavailable), do: gettext("This change is no longer available.")
   def toast(:processed), do: gettext("Already handled.")
@@ -64,6 +65,7 @@ defmodule PhoenixKitAgent.Telegram.Texts do
   def toast(:foreign), do: gettext("This change cannot be confirmed here. Open the site.")
   def toast(:unknown_button), do: gettext("This button does not work any more.")
   def toast(:unlinked), do: gettext("This chat is not linked to an account.")
+  def toast(:busy), do: gettext("The bot is busy right now. Press again in a minute.")
 
   @doc """
   The line under a card for a press that could not be carried out and left
@@ -79,8 +81,9 @@ defmodule PhoenixKitAgent.Telegram.Texts do
   def press_note({:refused, code}) when code in [:rate_limited, "rate_limited"],
     do: gettext("Not allowed: too many requests. Try again in a minute.")
 
-  def press_note({:refused, code}),
-    do: gettext("Not allowed: %{code}", code: code |> to_string() |> String.slice(0, 60))
+  # Core's other codes (a module closed to the assistant, a handler's refusal,
+  # another origin...) are not for the chat: a neutral line.
+  def press_note({:refused, _code}), do: gettext("Not allowed right now.")
 
   def press_note(reason), do: gettext("Not allowed: %{reason}", reason: refusal(reason))
 

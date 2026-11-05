@@ -7,6 +7,7 @@ defmodule PhoenixKitAgent.Telegram.CardTest do
   use ExUnit.Case, async: true
 
   alias PhoenixKitAgent.Telegram.Card
+  alias PhoenixKitAgent.Telegram.Format
 
   @uuid "0192f3a4-7b1c-7d2e-8f3a-123456789abc"
 
@@ -68,7 +69,6 @@ defmodule PhoenixKitAgent.Telegram.CardTest do
       big = %{"rows" => [row(1)], "extra" => String.duplicate("z", 3_000)}
       %{text: text, markup: markup} = Card.render(held(big), @uuid, :open)
 
-      assert text =~ "Technical details:"
       assert text =~ "Confirm it on the site"
       assert String.length(text) <= 4096
       assert [[%{"callback_data" => "x:" <> @uuid}]] = markup["inline_keyboard"]
@@ -80,6 +80,37 @@ defmodule PhoenixKitAgent.Telegram.CardTest do
 
       assert text =~ "Technical details:"
       assert [[_, _]] = markup["inline_keyboard"]
+    end
+
+    test "a preview that does not fit whole is never offered for ✅, only ❌ and the site" do
+      # Rows within their budget, and warnings and details that push the whole past the limit.
+      rows =
+        for n <- 1..9, do: row(n, %{"d" => %{"from" => "a", "to" => String.duplicate("x", 250)}})
+
+      warnings = for n <- 1..4, do: String.duplicate("w#{n}", 200)
+
+      %{text: text, markup: markup} =
+        Card.render(held(preview(rows, %{"warnings" => warnings})), @uuid, :open)
+
+      assert text =~ "too large to confirm here"
+      assert Format.units(text) <= 4096
+      assert [[%{"callback_data" => "x:" <> @uuid}]] = markup["inline_keyboard"]
+    end
+
+    test "the limit is Telegram's UTF-16 units, not characters" do
+      # 1990 astral characters: fewer than 4000 characters, but 3980 units, over the limit with the rest.
+      emoji = String.duplicate("😀", 1_990)
+      rows = [row(1, %{"d" => %{"from" => "a", "to" => emoji}})]
+      %{text: text, markup: markup} = Card.render(held(preview(rows)), @uuid, :open)
+
+      assert text =~ "too large to confirm here"
+      assert Format.units(text) <= 4096
+      assert [[%{"callback_data" => "x:" <> @uuid}]] = markup["inline_keyboard"]
+    end
+
+    test "a row core no longer holds as waiting is not offered at all" do
+      assert %{text: "Already handled.", markup: nil} =
+               Card.render({:ok, %{status: "used", preview: preview([row(1)])}}, @uuid, :open)
     end
 
     test "a line can be put under it" do

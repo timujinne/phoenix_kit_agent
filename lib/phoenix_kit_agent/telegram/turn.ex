@@ -77,8 +77,13 @@ defmodule PhoenixKitAgent.Telegram.Turn do
 
   defp current_conversation(user_uuid, ref) do
     case Conversations.latest_telegram_conversation(user_uuid) do
-      nil -> start_conversation(user_uuid, ref)
-      conversation -> {:ok, conversation}
+      %{metadata: %{"chat_id" => stored}} = conversation ->
+        if to_string(stored) == to_string(elem(ref, 3)),
+          do: {:ok, conversation},
+          else: start_conversation(user_uuid, ref)
+
+      _none_or_unmarked ->
+        start_conversation(user_uuid, ref)
     end
   end
 
