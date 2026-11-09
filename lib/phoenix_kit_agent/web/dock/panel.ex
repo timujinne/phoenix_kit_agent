@@ -414,6 +414,8 @@ defmodule PhoenixKitAgent.Web.Dock.Panel do
             errors={:inline}
             target={nil}
             portal={true}
+            start_button={true}
+            upload={nil}
             class={nil}
           />
           <span :if={@transcribing?} id="pk-agent-transcribing" role="status" class="flex items-center gap-1 text-xs text-base-content/60">
